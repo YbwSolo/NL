@@ -9,7 +9,7 @@ local VERSION = '3.0'
 ------------------------------------------------------------------ CONFIG (edit these)
 
 -- Where the rank badges live (rank_01.png .. rank_27.png). Same place you host this file.
-local ICON_BASE = 'https://YOUR-HOST/nl_ranks/icons/'
+local ICON_BASE = 'local ICON_BASE = 'https://raw.githubusercontent.com/YbwSolo/NL/main/icons/'
 
 -- Optional backend for server-side progress (leave '' to keep progress on each player's PC).
 local BACKEND = ''
