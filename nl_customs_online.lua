@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.8'
+local VERSION = '3.0'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -162,23 +162,28 @@ local FINISHES = { 'Gloss', 'Matte', 'Satin', 'Chrome' }
 local store = ac.storage { builds = '{}', shareBuild = true, showOthers = true, tunes = '{}' }
 
 local function defaultBuild()
-  return { v = 2, body = nil, rims = nil, calipers = nil, leather = nil, accent = nil, finish = 0, plate = '', platestyle = 0, glow = nil, rgbcycle = false, brakeflash = false, glowpower = 0.6, flame = 0, flamepow = 1.0 }
+  return { v = 2, body = nil, rims = nil, calipers = nil, leather = nil, accent = nil, finish = 0, plate = '', platestyle = 0, glow = nil, rgbcycle = false, brakeflash = false, glowpower = 0.6, flame = 0, flamepow = 1.0, smoke = 0, tint = 0, part = '', partcol = nil }
 end
 
 local status, statusTimer = '', 0
 local menu = { open = false, close = false, hintT = 0 }
 local menuButton = nil
 local function dlog(s) ac.log('nl_customs: ' .. s) end
-local function say(s) status = s; statusTimer = 6; dlog(s) end
+actionLog = {}
+local function say(s)
+  status = s; statusTimer = 6; dlog(s)
+  actionLog[#actionLog + 1] = s
+  if #actionLog > 4 then table.remove(actionLog, 1) end
+end
 
 local myCarID = ac.getCarID(0) or ''
 local build = defaultBuild()
 local dirty, dirtyTimer = false, 0
 local pick = {
   body = rgbm(0.9, 0.1, 0.1, 1), rims = rgbm(0.08, 0.08, 0.08, 1), calipers = rgbm(1, 0.75, 0, 1),
-  leather = rgbm(0.12, 0.12, 0.12, 1), accent = rgbm(0.0, 0.9, 0.35, 1), glow = rgbm(0.0, 0.9, 0.35, 1),
+  leather = rgbm(0.12, 0.12, 0.12, 1), accent = rgbm(0.0, 0.9, 0.35, 1), glow = rgbm(0.0, 0.9, 0.35, 1), part = rgbm(0.9, 0.1, 0.1, 1),
 }
-local enabled = { body = false, rims = false, calipers = false, leather = false, accent = false, glow = false }
+local enabled = { body = false, rims = false, calipers = false, leather = false, accent = false, glow = false, part = false }
 local plateText = ''
 local t = 0
 
@@ -376,6 +381,7 @@ end
 
 local plateApplied = {}
 local plateCanvas = {}
+local plateInfo = {}        -- car index -> last result text (shown in the Plate tab)
 local function plateSpec(index)
   local id = ac.getCarID(index) or ''
   local pc = PLATES[id]
@@ -388,54 +394,55 @@ local function plateSpec(index)
   return nil
 end
 
+-- the plate is drawn with normal ui calls into an ExtraCanvas (a GPU texture), and that canvas becomes the material's diffuse map
 local function applyPlate(index, text, force, style)
   text = text or ''
   style = style or 0
   local key = text .. '#' .. tostring(style)
   if not force and plateApplied[index] == key then return end
   local root = carRoot(index)
-  if not root then return end
+  if not root then plateInfo[index] = 'car model not loaded yet'; return end
   local pc = plateSpec(index)
-  local ref = pc and findByMaterial(root, pc.material) or nil
+  local ref, n = nil, 0
+  if pc then ref, n = findByMaterial(root, pc.material) end
   if not ref then
-    ref = findByMaterial(root, '?plate?') or findByMaterial(root, '?Plate?') or findByMaterial(root, '?PLATE?')
-    if not ref then return end
-    pc = { rect = { 0, 0, 1, 1 }, size = { 1024, 256 }, aspect = 4.0 }
+    for _, f in ipairs({ '?plate?', '?Plate?', '?PLATE?', '?licen?', '?numplate?' }) do
+      ref, n = findByMaterial(root, f)
+      if ref then break end
+    end
+    if not ref then plateInfo[index] = 'no plate material found on this car'; dlog('plate: no material on car ' .. index); return end
+    pc = { material = '?plate?', rect = { 0, 0, 1, 1 }, size = { 1024, 256 }, aspect = 4.0 }
   end
-  -- canvas keeps the texture's proportions (so the uv band lands in the right place), capped at 1024 wide
   local sw, sh = pc.size[1], pc.size[2]
   local scale = math.min(1, 1024 / sw)
   local size = vec2(math.floor(sw * scale), math.floor(sh * scale))
   local r = pc.rect
-  local x0, y0 = r[1] * size.x, r[2] * size.y
-  local x1, y1 = r[3] * size.x, r[4] * size.y
+  local x0, y0, x1, y1 = r[1] * size.x, r[2] * size.y, r[3] * size.x, r[4] * size.y
   if pc.sheetRect then x0, y0, x1, y1 = r[1] * size.x, r[2] * size.y, (r[1] + r[3]) * size.x, (r[2] + r[4]) * size.y end
   local bg = YELLOW
-  -- draw the plate at its real proportions on a side canvas, then stretch that into the band
-  local cw, ch = math.floor(512 * (pc.aspect or 4)), 512
-  local side = nil
-  pcall(function()
-    local pcv = plateCanvas[index]
-    if pcv and (pcv.w ~= cw) then pcall(function() pcv.c:dispose() end); pcv = nil end
-    if not pcv then pcv = { w = cw, c = ui.ExtraCanvas(vec2(cw, ch)) }; plateCanvas[index] = pcv end
-    pcv.c:update(function() drawUKPlate(0, 0, cw, ch, text, bg, style) end)
-    side = pcv.c
-  end)
   local ok, err = pcall(function()
+    local pcv = plateCanvas[index]
+    if pcv and (pcv.w ~= size.x or pcv.h ~= size.y) then pcall(function() pcv.c:dispose() end); pcv = nil end
+    if not pcv then pcv = { w = size.x, h = size.y, c = ui.ExtraCanvas(size, 4) }; plateCanvas[index] = pcv end
+    pcv.c:clear(rgbm(0.05, 0.05, 0.05, 1))
+    -- plate art at its real proportions on a side canvas, then stretched into the band the mesh uses
+    local cw, ch = math.floor(512 * (pc.aspect or 4)), 512
+    local side = plateCanvas['side' .. cw]
+    if not side then side = ui.ExtraCanvas(vec2(cw, ch), 1); plateCanvas['side' .. cw] = side end
+    side:clear(rgbm(0, 0, 0, 0))
+    side:update(function() drawUKPlate(0, 0, cw, ch, text, bg, style) end)
+    pcv.c:update(function() ui.drawImage(side, vec2(x0, y0), vec2(x1, y1)) end)
     ref:ensureUniqueMaterials()
-    ref:setMaterialTexture('txDiffuse', {
-      textureSize = size,
-      background = rgbm(0.05, 0.05, 0.05, 1),
-      callback = function()
-        local drawn = false
-        if side then drawn = pcall(function() ui.drawImage(side, vec2(x0, y0), vec2(x1, y1)) end) end
-        if not drawn then drawUKPlate(x0, y0, x1 - x0, y1 - y0, text, bg, style) end
-      end,
-    })
-    -- flat normal so no old embossed text shows through
+    ref:setMaterialTexture('txDiffuse', pcv.c)
     pcall(function() ref:setMaterialTexture('txNormal', rgbm(0.5, 0.5, 1, 1)) end)
   end)
-  if ok then plateApplied[index] = key else dlog('plate: ' .. tostring(err)) end
+  if ok then
+    plateApplied[index] = key
+    plateInfo[index] = string.format('plate on %s (%d mesh%s)', pc.material, n, n == 1 and '' or 'es')
+  else
+    plateInfo[index] = 'plate failed: ' .. tostring(err):sub(1, 80)
+    dlog('plate: ' .. tostring(err))
+  end
 end
 
 local function resetPlate(index)
@@ -474,6 +481,7 @@ local function setGlow(index, c, cycle, power, brakeflash)
       end
     end
     glowLights[index] = entry
+    if index == 0 then say(#entry.lights > 0 and ('Underglow on: ' .. #entry.lights .. ' lights') or 'Underglow: lights are not available in this CSP') end
   end
   entry.colour = c
   entry.cycle = cycle == true
@@ -611,6 +619,135 @@ local function flamesUpdate(dt)
   end
 end
 
+------------------------------------------------------------------ any part, window tint, coloured smoke
+
+-- every material name on a car, for the "any part" picker
+local allMats = {}
+local function materialList(index)
+  if allMats[index] then return allMats[index] end
+  local root = carRoot(index)
+  local names, seen = {}, {}
+  if root then
+    pcall(function()
+      local all = root:findMeshes('?')
+      for i = 1, all:size() do
+        local m = all:materialName(i)
+        if m and m ~= '' and not seen[m] then seen[m] = true; names[#names + 1] = m end
+      end
+    end)
+  end
+  table.sort(names, function(a, b) return a:lower() < b:lower() end)
+  allMats[index] = names
+  return names
+end
+
+local partRefs = {}       -- index -> { name, ref }
+local function applyPart(index, name, c)
+  local cur = partRefs[index]
+  if cur and cur.name ~= name then pcall(function() cur.ref:resetSkin() end); partRefs[index] = nil; cur = nil end
+  if not name or name == '' or not c then return end
+  local root = carRoot(index)
+  if not root then return end
+  if not cur then
+    local ref, n = findByMaterial(root, name)
+    if not ref then if index == 0 then say('Part "' .. name .. '" not found on this car') end return end
+    pcall(function() ref:ensureUniqueMaterials() end)
+    cur = { name = name, ref = ref, n = n }
+    partRefs[index] = cur
+  end
+  pcall(function()
+    cur.ref:setMaterialTexture('txDiffuse', rgbm(c[1], c[2], c[3], 1))
+    pcall(function() cur.ref:setMaterialTexture('txDetail', rgbm(0.5, 0.5, 0.5, 1)) end)
+    pcall(function() cur.ref:setMaterialProperty('useDetail', 0) end)
+    cur.ref:setMaterialProperty('ksEmissive', rgb(0, 0, 0))
+  end)
+end
+
+-- window tint: every exterior glass material gets a darker, more opaque diffuse
+local TINTS = { { 'None' }, { 'Light', 0.35, 0.55 }, { 'Dark', 0.15, 0.78 }, { 'Limo', 0.04, 0.92 } }
+local glassRefs = {}
+local tinted = {}
+local function glassMeshes(index)
+  if glassRefs[index] then return glassRefs[index] end
+  local root = carRoot(index)
+  local refs = {}
+  if root then
+    for _, m in ipairs(materialList(index)) do
+      local low = m:lower()
+      local isGlass = low:find('glass') or low:find('window') or low:find('windscreen') or low:find('windshield')
+      local bad = low:find('int_') or low:find('inside') or low:find('light') or low:find('lamp') or low:find('red') or low:find('gauge') or low:find('screen') or low:find('mirror') or low:find('head') or low:find('tail') or low:find('black') or low:find('nm') or low:find('ridge') or low:find('fog')
+      if isGlass and not bad then
+        local r = findByMaterial(root, m)
+        if r then pcall(function() r:ensureUniqueMaterials() end); refs[#refs + 1] = { name = m, ref = r } end
+      end
+    end
+  end
+  glassRefs[index] = refs
+  return refs
+end
+
+local function applyTint(index, level)
+  level = level or 0
+  local refs = glassMeshes(index)
+  if level == 0 then
+    if tinted[index] then for _, g in ipairs(refs) do pcall(function() g.ref:resetSkin() end) end; tinted[index] = nil end
+    return
+  end
+  local tn = TINTS[level + 1]
+  if not tn then return end
+  for _, g in ipairs(refs) do pcall(function() g.ref:setMaterialTexture('txDiffuse', rgbm(tn[2], tn[2], tn[2], tn[3])) end) end
+  tinted[index] = level
+  if index == 0 and #refs == 0 then say('No window glass found on this car') end
+end
+
+-- coloured tyre smoke, out of the rear wheels when they slip
+local SMOKES = {
+  { 'Off' },
+  { 'White',  rgbm(1.00, 1.00, 1.00, 0.55) },
+  { 'Blue',   rgbm(0.30, 0.55, 1.00, 0.60) },
+  { 'Green',  rgbm(0.25, 1.00, 0.40, 0.60) },
+  { 'Red',    rgbm(1.00, 0.20, 0.15, 0.60) },
+  { 'Purple', rgbm(0.75, 0.30, 1.00, 0.60) },
+  { 'Pink',   rgbm(1.00, 0.40, 0.75, 0.60) },
+  { 'Black',  rgbm(0.06, 0.06, 0.07, 0.70) },
+}
+local smokeChoice = {}
+local smokeEmitters = {}
+local smokeOK = nil
+local function setSmoke(index, idx) smokeChoice[index] = idx or 0 end
+
+local function smokeUpdate(dt)
+  if smokeOK == false then return end
+  local sim = ac.getSim()
+  for i = 0, sim.carsCount - 1 do
+    local idx = smokeChoice[i] or 0
+    if idx > 1 and SMOKES[idx] then
+      local car = ac.getCar(i)
+      if car and car.isConnected and car.speedKmh > 12 then
+        local em = smokeEmitters[i]
+        if not em then
+          local ok, e = pcall(function() return ac.Particles.Smoke({ color = SMOKES[idx][2], colorConsistency = 0.9, thickness = 0.85, life = 2.4, size = 0.3, spreadK = 1.1, growK = 1.4, targetYVelocity = 0.4 }) end)
+          if not ok or not e then smokeOK = false; dlog('smoke unavailable: ' .. tostring(e)); return end
+          smokeEmitters[i] = e
+          em = e
+        end
+        em.color = SMOKES[idx][2]
+        for w = 2, 3 do
+          local wh = car.wheels and car.wheels[w]
+          if wh then
+            local slip = wh.ndSlip or 0
+            if slip > 1.35 and wh.contactPoint then
+              local amount = math.min(3, math.floor(slip))
+              local vel = car.velocity * 0.35 + car.up * 1.5 + vec3(math.random() - 0.5, 0, math.random() - 0.5)
+              em:emit(wh.contactPoint + car.up * 0.08, vel, amount)
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
 ------------------------------------------------------------------ whole builds
 
 local function applyBuild(index, b)
@@ -622,6 +759,9 @@ local function applyBuild(index, b)
   if (b.plate or '') ~= '' or (b.platestyle or 0) ~= 0 then applyPlate(index, b.plate or '', false, b.platestyle or 0) else resetPlate(index) end
   setGlow(index, b.glow, b.rgbcycle, b.glowpower, b.brakeflash)
   setFlames(index, b.flame or 0, b.flamepow or 1.0)
+  setSmoke(index, b.smoke or 0)
+  applyTint(index, b.tint or 0)
+  applyPart(index, b.part or '', b.partcol)
 end
 
 local function resetCar(index)
@@ -629,6 +769,9 @@ local function resetCar(index)
   resetPlate(index)
   setGlow(index, nil)
   setFlames(index, 0, 1.0)
+  setSmoke(index, 0)
+  applyTint(index, 0)
+  applyPart(index, '', nil)
 end
 
 local function loadSaved()
@@ -652,6 +795,8 @@ local function syncEditorFromBuild()
   end
   enabled.glow = build.glow ~= nil
   if build.glow then pick.glow = rgbm(build.glow[1], build.glow[2], build.glow[3], 1) end
+  enabled.part = (build.part or '') ~= '' and build.partcol ~= nil
+  if build.partcol then pick.part = rgbm(build.partcol[1], build.partcol[2], build.partcol[3], 1) end
   plateText = build.plate or ''
 end
 
@@ -680,21 +825,28 @@ local function onPacket(sender, data)
   b.plate = data.plate or ''
   b.flame = data.flame or 0
   b.flamepow = (data.flamepow or 100) / 100
+  b.smoke = data.smoke or 0
+  b.tint = data.tint or 0
+  b.part = data.part or ''
+  if b.part ~= '' and data.partcol then b.partcol = { data.partcol.r, data.partcol.g, data.partcol.b } end
   remoteBuilds[sender.index] = b
   if store.showOthers then
-    if flags == 0 and b.plate == '' and b.platestyle == 0 and (b.flame or 0) == 0 then resetCar(sender.index) else applyBuild(sender.index, b) end
+    local empty = flags == 0 and b.plate == '' and b.platestyle == 0 and (b.flame or 0) == 0 and (b.smoke or 0) == 0 and (b.tint or 0) == 0 and b.part == ''
+    if empty then resetCar(sender.index) else applyBuild(sender.index, b) end
   end
 end
 
 pcall(function()
   syncEvent = ac.OnlineEvent({
-    ac.StructItem.key('NLCustomsSrv3'),
+    ac.StructItem.key('NLCustomsSrv4'),
     flags = ac.StructItem.int32(),
     body = ac.StructItem.rgb(), rims = ac.StructItem.rgb(), calipers = ac.StructItem.rgb(),
     leather = ac.StructItem.rgb(), accent = ac.StructItem.rgb(), glow = ac.StructItem.rgb(),
     plate = ac.StructItem.string(12),
     style = ac.StructItem.byte(), power = ac.StructItem.byte(), finish = ac.StructItem.byte(),
     flame = ac.StructItem.byte(), flamepow = ac.StructItem.byte(),
+    smoke = ac.StructItem.byte(), tint = ac.StructItem.byte(),
+    part = ac.StructItem.string(32), partcol = ac.StructItem.rgb(),
   }, onPacket)
 end)
 
@@ -715,6 +867,7 @@ local function broadcast()
       plate = b.plate or '', style = b.platestyle or 0, finish = b.finish or 0,
       power = math.floor(math.max(0, math.min(1, b.glowpower or 0.6)) * 255),
       flame = b.flame or 0, flamepow = math.floor(math.max(0.3, math.min(2, b.flamepow or 1)) * 100),
+      smoke = b.smoke or 0, tint = b.tint or 0, part = (b.partcol and b.part or ''):sub(1, 31), partcol = rgbOf(b.partcol),
     }, true)
   end)
 end
@@ -724,6 +877,7 @@ end
 local function pushEditor()
   for _, g in ipairs(GROUPS) do build[g.id] = enabled[g.id] and toRgbTable(pick[g.id]) or nil end
   build.glow = enabled.glow and toRgbTable(pick.glow) or nil
+  build.partcol = (enabled.part and (build.part or '') ~= '') and toRgbTable(pick.part) or nil
   build.plate = plateText
   applyBuild(0, build)
   dirty = true
@@ -794,7 +948,9 @@ local showroom = { cam = nil, angle = 0, speed = 0.35, dist = 6.5, height = 1.3,
 local function showroomStart()
   if showroom.cam then return end
   local ok, cam = pcall(ac.grabCamera, 'No License Customs')
-  if ok and cam then showroom.cam = cam; say('Showroom on. F8 for a screenshot. Stop gives the camera back.') else say('Camera is busy right now') end
+  local why = ''
+  if ok and not cam then local _, e = ac.grabCamera('No License Customs'); why = tostring(e or '') end
+  if ok and cam then showroom.cam = cam; say('Showroom on. F8 for a screenshot. Stop gives the camera back.') else say('Camera not available: ' .. (why ~= '' and why or tostring(cam)):sub(1, 70)) end
 end
 
 local function showroomStop()
@@ -1038,16 +1194,20 @@ function script.update(dt)
       for k in pairs(matCache) do if k:sub(1, #tostring(i) + 1) == i .. ':' then matCache[k] = nil end end
       rootCache[i] = nil
       plateApplied[i] = nil
+      allMats[i] = nil; glassRefs[i] = nil; tinted[i] = nil; partRefs[i] = nil
       if remoteBuilds[i] and store.showOthers then applyBuild(i, remoteBuilds[i]) end
     elseif not isOn and connected[i] then
       connected[i] = false
       setGlow(i, nil)
+      setSmoke(i, 0)
       remoteBuilds[i] = nil
       plateApplied[i] = nil
+      allMats[i] = nil; glassRefs[i] = nil; tinted[i] = nil; partRefs[i] = nil
     end
   end
   pcall(updateGlow, dt)
   pcall(flamesUpdate, dt)
+  pcall(smokeUpdate, dt)
   pcall(showroomUpdate, dt)
   tune.scanTimer = tune.scanTimer + dt
   if tune.scanTimer > 2 then
@@ -1189,7 +1349,7 @@ function section(label, col, ic)
   ui.drawRectFilled(vec2(p.x + (ic and 19 or 0) + tw + 10, p.y + 10), vec2(p.x + 560, p.y + 11), rgbm(1, 1, 1, 0.08))
 end
 
-TAB_ICONS = { cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
+TAB_ICONS = { effects = 'glow', cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
   paint = 'paint', interior = 'interior', plate = 'plate', glow = 'glow', looks = 'looks', tune = 'tune', showroom = 'showroom', save = 'save',
   players = 'players', ['time & weather'] = 'weather', server = 'server', camera = 'showroom' }
 
@@ -1451,6 +1611,100 @@ function finishButtons()
   ui.setCursor(vec2(p.x, p.y + 70))
 end
 
+
+-- small card frame used by the extra feature blocks
+function featureCard(label, sub, ic, h, on)
+  local p = ui.getCursor()
+  ui.dummy(vec2(580, h))
+  if on then hgrad(p, p + vec2(580, h), withA(BLUE, 0.18), rgbm(0, 0, 0, 0.5), 12); ui.drawRect(p, p + vec2(580, h), withA(BLUE, 0.6), 12, ui.CornerFlags.All, 1)
+  else ui.drawRectFilled(p, p + vec2(580, h), rgbm(0, 0, 0, 0.5), 12); ui.drawRect(p, p + vec2(580, h), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1) end
+  ui.drawRectFilled(vec2(p.x + 10, p.y + 10), vec2(p.x + 42, p.y + 42), withA(BLUE, on and 0.35 or 0.15), 8)
+  icon(ic, vec2(p.x + 18, p.y + 18), 16, on and rgbm(1, 1, 1, 1) or BLUE)
+  text(label:upper(), 12, vec2(p.x + 52, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
+  text(sub:upper(), 7, vec2(p.x + 52, p.y + 30), on and BLUE or DIM, F_BOLD)
+  return p
+end
+
+-- row of choice pills with a colour dot. returns the clicked index or nil
+function choiceRow(id, items, current, x, y, w)
+  local hit = nil
+  for i, it in ipairs(items) do
+    ui.setCursor(vec2(x, y))
+    ui.invisibleButton('##' .. id .. i, vec2(w, 30))
+    local hov = ui.itemHovered()
+    if ui.itemClicked(ui.MouseButton.Left) then hit = i end
+    local sel = current == i
+    local swatch = it[2] ~= nil and type(it[2]) ~= 'number' and it[2] or nil
+    local col = swatch and rgbm(swatch.r, swatch.g, swatch.b, 1) or BLUE
+    ui.drawRectFilled(vec2(x, y), vec2(x + w, y + 30), sel and withA(col, 0.35) or rgbm(0, 0, 0, 0.45 + 0.15 * (hov and 1 or 0)), 10)
+    ui.drawRect(vec2(x, y), vec2(x + w, y + 30), sel and col or rgbm(0.016, 0.012, 0.024, 0.72), 10, ui.CornerFlags.All, 1)
+    if swatch then ui.drawCircleFilled(vec2(x + 12, y + 15), 5, col, 12); text(it[1]:upper(), 8, vec2(x + 22, y + 11), rgbm(1, 1, 1, 0.9), F_BOLD)
+    else text(it[1]:upper(), 8, vec2(x + 12, y + 11), rgbm(1, 1, 1, 0.9), F_BOLD) end
+    x = x + w + 4
+  end
+  return hit
+end
+
+function tintCard()
+  local lvl = build.tint or 0
+  local p = featureCard('Window tint', TINTS[lvl + 1] and TINTS[lvl + 1][1] or 'None', 'eye', 96, lvl > 0)
+  local hit = choiceRow('tint', TINTS, lvl + 1, p.x + 12, p.y + 54, 100)
+  if hit then build.tint = hit - 1; pushEditor() end
+  ui.setCursor(vec2(p.x, p.y + 106))
+end
+
+function smokeCard()
+  local idx = build.smoke or 0
+  local p = featureCard('Tyre smoke', (idx > 1 and SMOKES[idx]) and SMOKES[idx][1] .. '   (everyone sees it)' or 'Off - normal smoke', 'wind', 120, idx > 1)
+  local hit = choiceRow('smk', SMOKES, idx, p.x + 12, p.y + 54, 66)
+  if hit then build.smoke = hit; pushEditor() end
+  text('COLOURED SMOKE OFF THE REAR TYRES WHEN THEY SLIP. DRIFT, BURNOUT, LAUNCH.', 7, vec2(p.x + 12, p.y + 96), DIM, F_BOLD)
+  ui.setCursor(vec2(p.x, p.y + 130))
+end
+
+menuUI.partSearch = menuUI.partSearch or ''
+function anyPartCard()
+  local on = enabled.part and (build.part or '') ~= ''
+  local p = featureCard('Any part', on and ('painting: ' .. build.part) or 'pick any material on the car and give it a colour', 'search', 330, on)
+  ui.setCursor(vec2(p.x + 580 - 118, p.y + 10))
+  if nlToggle('##part', enabled.part, 60) then enabled.part = not enabled.part; pushEditor() end
+  ui.drawCircleFilled(vec2(p.x + 580 - 28, p.y + 26), 13, enabled.part and pick.part or rgbm(1, 1, 1, 0.08), 24)
+  swatchRow('part', p.x + 12, p.y + 54)
+  -- material list with search
+  ui.setCursor(vec2(p.x + 12, p.y + 96))
+  menuUI.partSearch = searchBox('partsearch', menuUI.partSearch, 260)
+  local list = materialList(0)
+  local q = menuUI.partSearch:lower()
+  local x, y = p.x + 12, p.y + 140
+  local col, rowH = 0, 24
+  local shown = 0
+  for _, m in ipairs(list) do
+    if q == '' or m:lower():find(q, 1, true) then
+      if shown < 21 then
+        local cx = x + col * 186
+        ui.setCursor(vec2(cx, y))
+        ui.invisibleButton('##pm' .. m, vec2(180, rowH - 2))
+        local hov = ui.itemHovered()
+        local sel = build.part == m
+        if ui.itemClicked(ui.MouseButton.Left) then build.part = m; enabled.part = true; pushEditor(); say('Painting ' .. m) end
+        ui.drawRectFilled(vec2(cx, y), vec2(cx + 180, y + rowH - 2), sel and withA(BLUE, 0.5) or rgbm(0, 0, 0, hov and 0.6 or 0.35), 6)
+        text(m:sub(1, 26), 8, vec2(cx + 8, y + 7), rgbm(1, 1, 1, sel and 1 or 0.8), F_BOLD)
+        col = col + 1
+        if col == 3 then col = 0; y = y + rowH end
+      end
+      shown = shown + 1
+    end
+  end
+  if shown > 21 then text('TYPE TO NARROW IT DOWN (' .. shown .. ' MATERIALS)', 7, vec2(p.x + 290, p.y + 108), DIM, F_BOLD) end
+  if #list == 0 then text('CAR MODEL NOT LOADED YET, OPEN THIS AGAIN IN A MOMENT', 8, vec2(p.x + 12, p.y + 150), GOLD, F_BOLD) end
+  ui.setCursor(vec2(p.x, p.y + 340))
+end
+
+function foundLine(groupId)
+  local r = scanReport[groupId]
+  if r then text(r:upper():sub(1, 110), 7, ui.getCursor() + vec2(4, 0), DIM, F_BOLD); ui.dummy(vec2(1, 14)) end
+end
+
 function tabPaint()
   scrollArea('paint', 600, 440, function()
     pushKitStyle()
@@ -1458,6 +1712,7 @@ function tabPaint()
     if enabled.body then finishButtons() end
     colourBlock('rims', 'Wheels', 'wheel')
     colourBlock('calipers', 'Calipers', 'brake')
+    tintCard()
     popKitStyle()
   end)
 end
@@ -1466,9 +1721,10 @@ function tabInterior()
   scrollArea('int', 600, 440, function()
     pushKitStyle()
     colourBlock('leather', 'Leather / alcantara', 'interior')
+    foundLine('leather')
     colourBlock('accent', 'Trim accents', 'drop')
-    text('Not every car has recolourable accents. The Save tab shows what was found on this car.', 9, ui.getCursor() + vec2(4, 0), DIM)
-    ui.dummy(vec2(1, 14))
+    foundLine('accent')
+    anyPartCard()
     popKitStyle()
   end)
 end
@@ -1500,6 +1756,8 @@ function tabPlate()
   ui.drawRect(vec2(p.x + 90, p.y + 25), vec2(p.x + 490, p.y + 125), rgbm(1, 1, 1, 0.15), 3, ui.CornerFlags.All, 1)
   text('FRONT AND REAR. EVERYONE ON THE SERVER SEES IT.', 8, ui.getCursor() + vec2(4, 4), DIM, F_BOLD)
   ui.dummy(vec2(1, 16))
+  local pi = plateInfo[0]
+  if pi then text(('STATUS: ' .. pi):upper(), 7, ui.getCursor() + vec2(4, 0), pi:find('fail') and RED or (pi:find('no plate') and GOLD or GREEN), F_BOLD); ui.dummy(vec2(1, 14)) end
   popKitStyle()
 end
 
@@ -1575,6 +1833,7 @@ function tabGlow()
     if nlButton('Car default', 120, nil, 28) then build.flame = 0; pushEditor() end
     text('COLOURED FLAMES COME OUT OF THE REAL PIPES ON PACK CARS. STOCK = ORANGE ONLY.', 7, vec2(q.x + 12, q.y + 130), DIM, F_BOLD)
     ui.setCursor(vec2(q.x, q.y + fh + 10))
+    smokeCard()
     popKitStyle()
   end)
 end
@@ -1760,7 +2019,7 @@ function tabSave()
     section('found on this car', BLUE, 'car')
     for _, g in ipairs(GROUPS) do if scanReport[g.id] then text(scanReport[g.id], 9, ui.getCursor() + vec2(2, 0), DIM); ui.dummy(vec2(1, 13)) end end
     if nlButton('Re-scan car', 130, nil, 32, 'search') then
-      matCache = {}; rootCache = {}; stock = {}; plateApplied = {}; painted = {}
+      matCache = {}; rootCache = {}; stock = {}; plateApplied = {}; painted = {}; allMats = {}; glassRefs = {}; tinted = {}; partRefs = {}
       for _, g in ipairs(GROUPS) do groupMeshes(0, g.id) end
       applyBuild(0, build)
       say('Re-scanned')
@@ -1777,10 +2036,19 @@ function drawMenu()
       ui.drawRectFilled(vec2(p.x + W - sw - 20, p.y - 44), vec2(p.x + W, p.y - 26), withA(BLUE, 0.9), 9)
       text(status:upper(), 8, vec2(p.x + W - sw - 10, p.y - 40), rgbm(1, 1, 1, 1), F_BOLD)
     end
-    nlTabs('c', { 'Paint', 'Interior', 'Plate', 'Glow', 'Looks', 'Tune', 'Camera', 'Save' }, menuUI, W)
+    nlTabs('c', { 'Paint', 'Interior', 'Plate', 'Effects', 'Looks', 'Tune', 'Camera', 'Save' }, menuUI, W)
     local tabs = { tabPaint, tabInterior, tabPlate, tabGlow, tabLooks, tabTune, tabShowroom, tabSave }
-    if MENUTAB then menuUI.tab = MENUTAB end
-    tabs[menuUI.tab]()
+    local okt, errt = pcall(tabs[menuUI.tab])
+    if not okt then text(('TAB ERROR: ' .. tostring(errt)):sub(1, 120), 8, ui.getCursor() + vec2(4, 4), RED, F_BOLD); dlog('tab error: ' .. tostring(errt)) end
+    -- what happened last: the last few actions, bottom of the panel
+    local n = #actionLog
+    if n > 0 then
+      local y = p.y + 500
+      ui.drawRectFilled(vec2(p.x, y - 6), vec2(p.x + W, y + 30), rgbm(0, 0, 0, 0.35), 8)
+      for i = math.max(1, n - 1), n do
+        text(actionLog[i]:upper():sub(1, 118), 7, vec2(p.x + 10, y + 1 + (i - math.max(1, n - 1)) * 13), i == n and rgbm(1, 1, 1, 0.9) or DIM, F_BOLD)
+      end
+    end
 end
 
 pcall(function()
