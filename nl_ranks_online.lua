@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.7'
+local VERSION = '4.8'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -41,7 +41,7 @@ local XP_BOOST = { hours = { 20, 21, 22, 23 }, mult = 2 }
 
 -- Key that opens the menu (name from ui.KeyIndex: Home, End, Insert, F9, F10, M, N ...). Players can rebind it in Settings.
 local MENU_KEY = 'End'
-local ADMIN_KEY = 'F7'             -- admin panel. only opens after /admin <password> in chat
+local ADMIN_KEY = 'Home'           -- admin panel. only opens after /admin <password> (F-keys are taken by AC itself)
 local HINT_SECONDS = 30            -- how long the "press HOME" hint stays on the left of the screen after joining
 
 local ENABLE_WANTED = true         -- top run on the server becomes WANTED: 1.5x xp for them, bounty xp for near-missing them
@@ -2701,6 +2701,8 @@ function tabSettings()
     end
     if chase.state ~= 'idle' and nlButton('Cancel chase', 140, RED, 32, 'close') then chaseReset() end
     section('admin', RED, 'admin')
+    text('CSP ADMIN FLAG: ' .. (admin.simAdmin and 'YES' or 'NO') .. '      LOGGED IN HERE: ' .. (admin.chatAdmin and 'YES' or 'NO'), 7, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+    ui.dummy(vec2(1, 12))
     if admin.isAdmin then
       if nlButton('Open admin panel', 190, RED, 32, 'admin') then admin.open = true; anim['paneladmin'] = 0; menu.open = false end
       text('OR PRESS ' .. ADMIN_KEY:upper(), 8, ui.getCursor() + vec2(4, 2), DIM, F_BOLD)
@@ -2808,6 +2810,11 @@ function drawMenu()
     local bx = tx
     for _, b in ipairs(badges) do
       local bw = textW(b[1], 8, F_BOLD).x + 16
+      if b[1]:sub(1, 5) == 'ADMIN' then
+        ui.setCursor(vec2(bx, p.y + 86))
+        ui.invisibleButton('##adminbadge', vec2(bw, 16))
+        if ui.itemClicked(ui.MouseButton.Left) then admin.open = true; anim['paneladmin'] = 0; menu.open = false end
+      end
       ui.drawRectFilled(vec2(bx, p.y + 86), vec2(bx + bw, p.y + 102), withA(b[2], 0.9), 8)
       text(b[1], 8, vec2(bx + 8, p.y + 90), b[2] == GOLD and rgbm(0.05, 0.05, 0.05, 1) or rgbm(1, 1, 1, 1), F_BOLD)
       bx = bx + bw + 6
@@ -3026,18 +3033,19 @@ function adminUpdate(dt)
     admin.checkT = 0
     pcall(function() ac.checkAdminPrivileges() end)
   end
-  pcall(function() admin.isAdmin = ac.getSim().isAdmin == true or admin.chatAdmin == true end)
+  pcall(function() admin.simAdmin = ac.getSim().isAdmin == true end)
+  admin.isAdmin = admin.simAdmin == true or admin.chatAdmin == true
   if admin.open and not admin.isAdmin then admin.open = false end
 end
 
 adminButton = nil
-pcall(function() adminButton = ac.ControlButton('NL_ADMIN_MENU', { keyboard = { key = ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.F7 } }) end)
+pcall(function() adminButton = ac.ControlButton('NL_ADMIN_MENU', { keyboard = { key = ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Home } }) end)
 function adminKeyPressed()
   if adminButton then
     local ok, v = pcall(function() return adminButton:pressed() end)
     if ok and v == true then return true end
   end
-  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.F7) end)
+  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Home) end)
   return ok and v == true
 end
 
@@ -3068,6 +3076,7 @@ function script.drawUI(dt)
   end
   adminUpdate(dt)
   if adminKeyPressed() then
+    dlog('admin key, isAdmin=' .. tostring(admin.isAdmin))
     if admin.isAdmin then admin.open = not admin.open; if admin.open then anim['paneladmin'] = 0 end
     else pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Admin panel: type /admin <password> in chat first.') end) end
   end
