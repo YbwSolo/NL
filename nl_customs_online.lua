@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.5'
+local VERSION = '2.6'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -1144,8 +1144,11 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
     pill(o + vec2(pw - 50, 16), 32, 32, false, hf)
     icon('close', o + vec2(pw - 41, 25), 14, rgbm(1, 1, 1, 0.7 + 0.3 * hf))
     if ui.itemClicked(ui.MouseButton.Left) then onClose() end
+    -- every new line starts at the content edge, not at the window edge
+    ui.indent(o.x + 22)
     ui.setCursor(o + vec2(22, 80))
     fn()
+    ui.unindent(o.x + 22)
   end)
 end
 

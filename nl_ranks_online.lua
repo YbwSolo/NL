@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.6'
+local VERSION = '4.7'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -2310,8 +2310,11 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
     pill(o + vec2(pw - 50, 16), 32, 32, false, hf)
     icon('close', o + vec2(pw - 41, 25), 14, rgbm(1, 1, 1, 0.7 + 0.3 * hf))
     if ui.itemClicked(ui.MouseButton.Left) then onClose() end
+    -- every new line starts at the content edge, not at the window edge
+    ui.indent(o.x + 22)
     ui.setCursor(o + vec2(22, 80))
     fn()
+    ui.unindent(o.x + 22)
   end)
 end
 
@@ -2697,9 +2700,33 @@ function tabSettings()
       if duel.state ~= 'idle' and nlButton('Cancel race', 140, RED, 32, 'close') then duelCancel(true) end
     end
     if chase.state ~= 'idle' and nlButton('Cancel chase', 140, RED, 32, 'close') then chaseReset() end
+    section('admin', RED, 'admin')
     if admin.isAdmin then
-      section('admin', RED, 'admin')
       if nlButton('Open admin panel', 190, RED, 32, 'admin') then admin.open = true; anim['paneladmin'] = 0; menu.open = false end
+      text('OR PRESS ' .. ADMIN_KEY:upper(), 8, ui.getCursor() + vec2(4, 2), DIM, F_BOLD)
+      ui.dummy(vec2(1, 14))
+    else
+      if admin.pw == nil then admin.pw = '' end
+      local q = ui.getCursor()
+      pill(q, 260, 32, false, 0)
+      ui.setCursor(vec2(q.x + 12, q.y + 5))
+      ui.setNextItemWidth(236)
+      pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+      local pwFlags = 0
+      pcall(function() pwFlags = ui.InputTextFlags.Password end)
+      admin.pw = ui.inputText('##adminpw', admin.pw, pwFlags)
+      pcall(function() ui.popStyleColor() end)
+      if admin.pw == '' then text('SERVER ADMIN PASSWORD', 9, vec2(q.x + 14, q.y + 11), rgbm(1, 1, 1, 0.3), F_BOLD) end
+      ui.setCursor(vec2(q.x + 270, q.y))
+      if nlButton('Log in', 110, RED, 32, 'admin') and admin.pw ~= '' then
+        pcall(function() ac.sendChatMessage('/admin ' .. admin.pw) end)
+        admin.chatAdmin = true
+        admin.isAdmin = true
+        admin.pw = ''
+        pcall(function() ui.toast(ui.Icons and ui.Icons.Confirm or 'fx:loading', 'Admin panel unlocked. Press ' .. ADMIN_KEY:upper() .. '.') end)
+      end
+      text('SAME PASSWORD AS /ADMIN IN CHAT. SENDS /ADMIN FOR YOU AND UNLOCKS THE PANEL.', 7, ui.getCursor() + vec2(2, 2), DIM, F_BOLD)
+      ui.dummy(vec2(1, 14))
     end
   if ENABLE_POLICE or ENABLE_RACE_ZONES then
     ui.separator()
@@ -3018,6 +3045,7 @@ end
 pcall(function()
   ac.onChatMessage(function(message, carIdx)
     local m = tostring(message or ''):lower()
+    if m:find('admin', 1, true) then dlog('chat (' .. tostring(carIdx) .. '): ' .. tostring(message)) end
     if (carIdx == nil or carIdx < 0 or carIdx == 0) and m:find('admin', 1, true) and (m:find('now', 1, true) or m:find('granted', 1, true) or m:find('logged', 1, true) or m:find('you are', 1, true) or m:find('privileges', 1, true)) then
       admin.chatAdmin = true
       admin.isAdmin = true
