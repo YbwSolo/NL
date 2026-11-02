@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '3.0'
+local VERSION = '3.1'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -475,7 +475,7 @@ local function setGlow(index, c, cycle, power, brakeflash)
       local ok, l = pcall(function() return ac.LightSource(ac.LightType.Regular) end)
       if ok and l then
         pcall(function()
-          l.range = 3.2; l.rangeGradientOffset = 0.15; l.specularMultiplier = 0; l.fadeAt = 300; l.fadeSmooth = 50
+          l.range = 4.6; l.rangeGradientOffset = 0.1; l.specularMultiplier = 0.2; l.fadeAt = 350; l.fadeSmooth = 60; l.affectsCars = true; l.skipLightMap = false; l.showInReflections = true
         end)
         entry.lights[#entry.lights + 1] = l
       end
@@ -485,7 +485,7 @@ local function setGlow(index, c, cycle, power, brakeflash)
   end
   entry.colour = c
   entry.cycle = cycle == true
-  entry.power = (power or 0.6) * 5
+  entry.power = (power or 0.6) * 40
   entry.brakeflash = brakeflash == true
   for _, l in ipairs(entry.lights) do pcall(function() l.color = rgb(c[1], c[2], c[3]) * entry.power end) end
 end
@@ -545,14 +545,14 @@ local EXHAUSTS = {
 -- 1 = stock orange only. the rest add a coloured flame on top of the stock one
 local FLAMES = {
   { 'Stock' },
-  { 'Blue',   rgbm(0.30, 0.55, 1.00, 1), 2.2 },
-  { 'Green',  rgbm(0.25, 1.00, 0.35, 1), 1.6 },
-  { 'Red',    rgbm(1.00, 0.18, 0.10, 1), 0.7 },
-  { 'Purple', rgbm(0.80, 0.30, 1.00, 1), 1.6 },
-  { 'Pink',   rgbm(1.00, 0.35, 0.75, 1), 1.5 },
-  { 'Cyan',   rgbm(0.20, 0.95, 1.00, 1), 2.0 },
-  { 'White',  rgbm(1.00, 1.00, 1.00, 1), 2.6 },
-  { 'Gold',   rgbm(1.00, 0.80, 0.25, 1), 1.0 },
+  { 'Blue',   rgbm(0.55, 0.70, 1.00, 1), 1.9 },
+  { 'Green',  rgbm(0.45, 1.00, 0.55, 1), 1.25 },
+  { 'Red',    rgbm(1.00, 0.40, 0.30, 1), 0.75 },
+  { 'Purple', rgbm(0.85, 0.50, 1.00, 1), 1.4 },
+  { 'Pink',   rgbm(1.00, 0.50, 0.80, 1), 1.2 },
+  { 'Cyan',   rgbm(0.45, 0.95, 1.00, 1), 1.7 },
+  { 'White',  rgbm(1.00, 1.00, 1.00, 1), 2.1 },
+  { 'Gold',   rgbm(1.00, 0.85, 0.45, 1), 0.95 },
 }
 -- what each pack car runs when its driver has not picked anything (0 in the build = car default)
 local FLAME_DEFAULT = {
@@ -595,24 +595,23 @@ local function flamesUpdate(dt)
           flameEmitters[i] = e
           em = e
         end
-        em.color = rgbm(f[2].r, f[2].g, f[2].b, 1.2 * pow)
+        em.color = rgbm(f[2].r, f[2].g, f[2].b, 0.9)
         em.temperatureMultiplier = f[3]
-        em.size = 0.18 + 0.1 * pow
-        em.flameIntensity = 0.5 * pow
+        em.size = 0.12 + 0.06 * pow
+        em.flameIntensity = 0.8 * pow
         local tr = car.transform or car.bodyTransform
-        local n = (sim.fps and sim.fps > 90) and 1 or 2
         if ex and tr then
           for _, e in ipairs(ex) do
             local pos = tr:transformPoint(vec3(e[1], e[2], e[3]))
             local dir = tr:transformVector(vec3(e[4], e[5], e[6]))
-            local vel = car.velocity + dir * (7 + 5 * pow) + vec3(math.random() - 0.5, math.random() * 0.5, math.random() - 0.5)
-            em:emit(pos, vel, n)
+            local vel = car.velocity + dir * (4 + 4 * pow) + vec3((math.random() - 0.5) * 0.6, math.random() * 0.4, (math.random() - 0.5) * 0.6)
+            em:emit(pos, vel, 1)
           end
         else
           -- unknown car: middle of the rear bumper, low
           local pos = car.position - car.look * 2.3 + car.up * 0.35
-          local vel = car.velocity - car.look * (7 + 5 * pow)
-          em:emit(pos, vel, n)
+          local vel = car.velocity - car.look * (4 + 4 * pow)
+          em:emit(pos, vel, 1)
         end
       end
     end
@@ -1081,7 +1080,7 @@ local function applyFractions(frac)
     end
   end
   if count == 0 then say('No setup items found yet. Open the setup screen in the pits once, then try again.') return end
-  if canEdit() then flushPending() else say('Queued ' .. count .. ' setting(s). They apply the moment you are in the pits.') end
+  if canEdit() then flushPending() else say('Queued ' .. count .. ' setting(s). ESC > Back to pits > Setup, and they apply.'); pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Tune queued. AC only changes setup in the pits: ESC > Back to pits > Setup.') end) end
 end
 
 local function simpleToFractions(sm)
@@ -1336,7 +1335,7 @@ function nlToggle(label, on, w)
   pill(p, w, 32, false, hf)
   ui.drawRectFilled(vec2(p.x + 10, p.y + 9), vec2(p.x + 38, p.y + 23), lerpC(rgbm(1, 1, 1, 0.12), BLUE, f), 7)
   ui.drawCircleFilled(vec2(p.x + 17 + 14 * f, p.y + 16), 5.5, rgbm(1, 1, 1, 0.95), 12)
-  text(label:upper(), 11, vec2(p.x + 48, p.y + 9), rgbm(1, 1, 1, 0.85 + 0.15 * hf), F_BOLD)
+  text(label:gsub('##.*$', ''):upper(), 11, vec2(p.x + 48, p.y + 9), rgbm(1, 1, 1, 0.85 + 0.15 * hf), F_BOLD)
   return clicked
 end
 
@@ -1530,6 +1529,18 @@ SWATCHES = {
 }
 
 -- colour squares that grow on hover. click = paint
+-- colour picker flags, only the ones this CSP build knows
+function pickerFlags()
+  local f = 0
+  pcall(function()
+    for _, n in ipairs({ 'NoAlpha', 'PickerHueBar', 'NoSidePreview', 'NoSmallPreview', 'NoInputs', 'NoLabel', 'NoTooltip' }) do
+      local v = ui.ColorPickerFlags[n]
+      if v then f = bit.bor(f, v) end
+    end
+  end)
+  return f
+end
+
 function swatchRow(id, x, y)
   local p = vec2(x, y)
   local sz, gap = 28, 6
@@ -1588,7 +1599,7 @@ function colourBlock(id, label, ic)
     swatchRow(id, p.x + 12, p.y + 60)
     ui.setCursor(vec2(p.x + 12, p.y + 102))
     ui.setNextItemWidth(200)
-    if ui.colorPicker('##pk' .. id, pick[id], bit.bor(ui.ColorPickerFlags.NoAlpha, ui.ColorPickerFlags.PickerHueBar, ui.ColorPickerFlags.NoSidePreview)) then pushEditor() end
+    if ui.colorPicker('##pk' .. id, pick[id], pickerFlags()) then pushEditor() end
   end
   ui.setCursor(vec2(p.x, p.y + h + 10))
   ui.popID()
@@ -1785,7 +1796,7 @@ function tabGlow()
       swatchRow('glow', p.x + 12, p.y + 90)
       ui.setCursor(vec2(p.x + 12, p.y + 132))
       ui.setNextItemWidth(200)
-      if ui.colorPicker('##pkglow', pick.glow, bit.bor(ui.ColorPickerFlags.NoAlpha, ui.ColorPickerFlags.PickerHueBar, ui.ColorPickerFlags.NoSidePreview)) then pushEditor() end
+      if ui.colorPicker('##pkglow', pick.glow, pickerFlags()) then pushEditor() end
       ui.setCursor(vec2(p.x + 240, p.y + 136))
       ui.setNextItemWidth(320)
       local v, ch = ui.slider('##gp', build.glowpower or 0.6, 0.1, 1.0, 'Brightness: %.2f')
@@ -1845,6 +1856,7 @@ function tabLooks()
       local p = ui.getCursor()
       ui.invisibleButton('##look' .. i, vec2(186, 118))
       local hov = ui.itemHovered()
+      local clicked = ui.itemClicked(ui.MouseButton.Left)
       local f = ease('look' .. i, hov and 1 or 0)
       ui.drawRectFilled(p, p + vec2(186, 118), rgbm(0, 0, 0, 0.5 + 0.15 * f), 12)
       ui.drawRect(p, p + vec2(186, 118), lerpC(rgbm(0.016, 0.012, 0.024, 0.72), rgbm(0.5, 0.5, 0.52, 0.9), f), 12, ui.CornerFlags.All, 1)
@@ -1861,8 +1873,11 @@ function tabLooks()
       text('LOOK', 7, vec2(p.x + 10, p.y + 58), DIM, F_BOLD)
       text(L.name, 11, vec2(p.x + 10, p.y + 69), rgbm(1, 1, 1, 1), F_BOLD)
       text(FINISHES[(L.finish or 0) + 1]:upper(), 7, vec2(p.x + 120, p.y + 71), DIM, F_BOLD)
-      ui.setCursor(vec2(p.x + 10, p.y + 88))
-      if nlButton('Apply##' .. i, 166, nil, 22) or (ui.itemClicked(ui.MouseButton.Left) and false) then applyLook(L) end
+      -- the whole card is the button (a button drawn on top of a button never gets the click)
+      pill(vec2(p.x + 10, p.y + 88), 166, 22, hov, f)
+      local aw = textW('APPLY', 11, F_BOLD).x
+      text('APPLY', 11, vec2(p.x + 10 + (166 - aw) / 2, p.y + 93), rgbm(1, 1, 1, 0.9), F_BOLD)
+      if clicked then applyLook(L) end
       ui.setCursor(vec2(p.x, p.y + 118))
       if i % 3 ~= 0 and i < #LOOKS then ui.setCursor(vec2(p.x + 196, p.y)) else ui.dummy(vec2(1, 10)) end
     end

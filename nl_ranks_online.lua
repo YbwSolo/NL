@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.9'
+local VERSION = '5.0'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -27,6 +27,9 @@ local BACKEND = ''
 -- Features. true = on, false = off.
 local ENABLE_POLICE = false        -- blue circles that start a police chase
 local ENABLE_HEAT = true           -- crash a lot in a short time and the police come for you (no circles needed)
+local COP_TOP_KMH = 175            -- police never go faster than this. get above it and you are gone
+local COP_MAX_UNITS = 2            -- one unit to start, a second one at 3 stars (stars = crashes while they chase you)
+local COP_SECOND_UNIT_STARS = 3
 local HEAT_CRASHES = 4             -- this many contacts...
 local HEAT_WINDOW = 45             -- ...within this many seconds = chase
 local ENABLE_RACE_ZONES = false    -- red circles that start a race lobby
@@ -94,7 +97,7 @@ local XP = {
   escape = 4000, escapePerUnit = 500, busted = -2500,
   raceWin = 3000, raceSecond = 1800, raceThird = 1000, raceFinish = 500, raceSolo = 300,
   duelWin = 2500, duelLose = 400, duelDraw = 1200,
-  bounty = 600, draftPerSec = 3,
+  bounty = 600, draftPerSec = 3, copSpin = 800,
 }
 local NEAR, PASS, MIN_SPEED, MIN_REL = 2.9, 5.0, 60, 12
 
@@ -1063,7 +1066,7 @@ local function makeUnit(pos, look, role)
   end
   if copPhysicsOK ~= false then
     local ok, err = pcall(function()
-      u.body = physics.RigidBody({ physics.Collider.Box(vec3(1.85, 1.2, 4.4), vec3(0, 0.7, 0)) }, 1500, nil, true, true)
+      u.body = physics.RigidBody({ physics.Collider.Box(vec3(1.85, 1.2, 4.4), vec3(0, 0.7, 0)) }, 1100, nil, true, true)
       u.body:setSemiDynamic(true, true)
       u.body:setTransformation(poseMatrix(u.pos, u.look), false)
       copPhysicsOK = true
@@ -1100,7 +1103,8 @@ end
 local ROLES = { 'ram', 'pitL', 'pitR', 'ram', 'pitL' }
 local function spawnUnit(me, extra)
   local n = #chase.units
-  if n >= 5 then return end
+  if n >= COP_MAX_UNITS then return end
+  if n >= 1 and (chase.stars or 0) < COP_SECOND_UNIT_STARS then return end
   local behind = me.position - me.look * (40 + n * 10) - me.side * ((n % 2 == 0) and 1.5 or -1.5)
   local u = makeUnit(behind, me.look, ROLES[n + 1] or 'ram')
   u.spd = me.speedKmh / 3.6
@@ -1163,57 +1167,81 @@ end
 -- drive one unit for one frame
 local function driveUnit(i, u, dt, me)
   local pSpeed = me.speedKmh / 3.6
+  local topSpd = COP_TOP_KMH / 3.6
   local gap = flatDist(u.pos, me.position)
   local rel = me.position - u.pos
   local behind = rel:dot(u.look) > 0          -- player is in front of the unit
 
-  -- where it wants to go
+  -- spun out: no steering, sliding and rotating until it settles
+  if u.spin and u.spin > 0 then
+    u.spin = u.spin - dt
+    local c, sn = math.cos(2.4 * dt * u.spinDir), math.sin(2.4 * dt * u.spinDir)
+    u.look = vec3(u.look.x * c - u.look.z * sn, 0, u.look.x * sn + u.look.z * c):normalize()
+    u.spd = math.max(0, u.spd - 14 * dt)
+    u.pos = u.pos + u.slideDir * (u.spd * dt)
+    u.pos.y = u.pos.y + (me.position.y - u.pos.y) * math.min(1, dt * 6)
+    if u.body then pcall(function() if u.body:isSemiDynamic() then u.body:setTransformation(poseMatrix(u.pos, u.look), true) end end) end
+    if u.node then pcall(function() u.node:setPosition(u.pos); u.node:setOrientation(u.look, vec3(0, 1, 0)) end) end
+    for li, l in ipairs(u.lights) do l.position = u.pos + vec3(0, 1.55, 0) + vec3(-u.look.z, 0, u.look.x) * (li == 1 and 0.45 or -0.45) end
+    return gap
+  end
+
+  -- where it wants to go, and how fast. the unit is quick but it is not a rocket: it tops out at COP_TOP_KMH,
+  -- it only closes at +8 m/s, and once it is right behind you it matches your speed and nudges, it does not slam
   local target, want
   if gap > 45 or not behind then
-    -- far away or player got behind it: follow the road the player took, aiming a bit ahead along it
     target = trailAhead(u.pos, 22 + 4 * (i - 1))
     if not target or flatDist(target, u.pos) < 3 then target = me.position end
-    want = math.min(pSpeed + 14, 72)
+    want = math.min(pSpeed + 8, topSpd)
   elseif u.role == 'ram' then
-    -- aim where the car will be, arrive a bit faster than it
-    target = me.position + me.velocity * 0.35
-    want = pSpeed + (gap > 12 and 9 or 5)
+    target = me.position + me.velocity * 0.3
+    if gap > 14 then want = math.min(pSpeed + 6, topSpd)
+    elseif pSpeed < 14 then want = math.min(pSpeed + 5, 16)      -- you are slow: it comes in and shoves
+    else want = pSpeed + 1.0 end                                  -- you are moving: it sits on your bumper and leans
   else
-    -- come up the side, then lean into the rear quarter (the pit)
     local side = (u.role == 'pitL') and -1 or 1
-    local lateral = rel:dot(me.side) * -side     -- how far the unit is out to its side (positive = on its side)
-    local alongside = rel:dot(me.look)           -- positive = player ahead of unit
+    local alongside = rel:dot(me.look)
     if alongside > 4 then
       target = me.position - me.look * 1.0 + me.side * side * 2.4
-      want = pSpeed + 7
+      want = math.min(pSpeed + 5, topSpd)
     else
       target = me.position - me.look * 1.2 + me.side * side * 0.6
-      want = pSpeed + 1.5
+      want = pSpeed + 1.0
     end
   end
-  if pSpeed < 3 then want = math.max(want, 6) end   -- a stopped car still gets hit
-  want = math.max(4, math.min(want, 75))
+  if pSpeed < 3 then want = math.max(want, 6) end
+  want = math.max(4, math.min(want, topSpd))
 
-  -- steer with a turn rate limit, speed with accel limits
+  -- steer with a turn rate limit. ask too much of it at speed and it loses the back end
   local d = target - u.pos
   local dl = vec3(d.x, 0, d.z)
   local dist = dl:length()
   if dist > 0.3 then
     local dir = dl / dist
-    -- cross > 0 means the target is to the left when rotating (x, z) -> (x cos - z sin, x sin + z cos), so turn positive
     local cross = u.look.x * dir.z - u.look.z * dir.x
     local dot = math.max(-1, math.min(1, u.look:dot(dir)))
     local ang = math.acos(dot)
-    local maxTurn = (2.4 - math.min(1.8, u.spd * 0.03)) * dt
+    if ang > 0.85 and u.spd > 17 and gap < 40 and t - (u.lastSpin or -10) > 8 then
+      -- you swerved and it could not follow: spin out for a few seconds
+      u.spin = 2.6 + math.random() * 1.2
+      u.spinDir = cross > 0 and 1 or -1
+      u.slideDir = vec3(u.look.x, 0, u.look.z)
+      u.lastSpin = t
+      chase.lost = (chase.lost or 0) + 1
+      event('POLICE SPUN OUT   +' .. XP.copSpin .. ' xp', rgbm(0.4, 0.8, 1, 1), true)
+      addXP(XP.copSpin, 'made a cop spin out', rgbm(0.4, 0.8, 1, 1))
+      hud.lastEvent = t
+      return gap
+    end
+    local maxTurn = (2.2 - math.min(1.7, u.spd * 0.032)) * dt
     local turn = math.min(ang, maxTurn) * (cross > 0 and 1 or -1)
-    local c, s = math.cos(turn), math.sin(turn)
-    u.look = vec3(u.look.x * c - u.look.z * s, 0, u.look.x * s + u.look.z * c):normalize()
-    if ang > 0.5 then want = math.min(want, math.max(8, 30 - (ang - 0.5) * 18)) end   -- the sharper the turn, the slower
+    local c, sn = math.cos(turn), math.sin(turn)
+    u.look = vec3(u.look.x * c - u.look.z * sn, 0, u.look.x * sn + u.look.z * c):normalize()
+    if ang > 0.5 then want = math.min(want, math.max(8, 30 - (ang - 0.5) * 18)) end
   end
   if dist < 2 and u.role ~= 'ram' then want = pSpeed end
-  if u.spd < want then u.spd = math.min(want, u.spd + 9 * dt) else u.spd = math.max(want, u.spd - 16 * dt) end
+  if u.spd < want then u.spd = math.min(want, u.spd + 8 * dt) else u.spd = math.max(want, u.spd - 14 * dt) end
   u.pos = u.pos + u.look * (u.spd * dt)
-  -- stay at road height: trail / player height
   local ty = (gap > 45 and target or me.position).y
   u.pos.y = u.pos.y + (ty - u.pos.y) * math.min(1, dt * 6)
 
@@ -1284,9 +1312,9 @@ local function chaseUpdate(dt, me)
       chase.state = 'active'
       chaseActive = true
       broadcastRank()
+      chase.stars = 1
       spawnUnit(me)
-      spawnUnit(me)
-      showBanner('CHASE ON', 'lose them. they will ram you and pit you', rgbm(0.3, 0.5, 1, 1), 2.5)
+      showBanner('CHASE ON', 'one unit on you. outrun it or make it miss', rgbm(0.3, 0.5, 1, 1), 2.5)
     end
     return
   end
@@ -1325,9 +1353,9 @@ local function chaseUpdate(dt, me)
     chaseReset()
     return
   end
-  if nearest > 260 then chase.farTimer = chase.farTimer + dt else chase.farTimer = 0 end
+  if nearest > 200 then chase.farTimer = chase.farTimer + dt else chase.farTimer = 0 end
   if chase.farTimer > 5 or chase.time > 300 then
-    local bonus = XP.escape + XP.escapePerUnit * #chase.units + math.max(0, 120 - chase.time)
+    local bonus = XP.escape + XP.escapePerUnit * #chase.units + math.max(0, 120 - chase.time) + XP.copSpin * (chase.lost or 0)
     store.escapes = store.escapes + 1
     showBanner('ESCAPED', 'lost ' .. #chase.units .. ' units   +' .. math.floor(bonus) .. ' xp', rgbm(0, 0.96, 0.38, 1), 4)
     addXP(bonus, 'escaped the police', rgbm(0, 0.96, 0.38, 1))
@@ -1353,10 +1381,13 @@ end
 
 local function chaseCrash(me)
   if chase.state ~= 'active' then return end
-  if t - chase.lastSpawnT > 4 then
+  chase.stars = math.min(5, (chase.stars or 1) + 1)
+  if chase.stars >= COP_SECOND_UNIT_STARS and #chase.units < COP_MAX_UNITS and t - chase.lastSpawnT > 4 then
     chase.lastSpawnT = t
     spawnUnit(me)
-    event('another unit joined', rgbm(0.4, 0.6, 1, 1))
+    event('second unit joined', rgbm(0.4, 0.6, 1, 1))
+  else
+    event(chase.stars .. ' stars', rgbm(0.4, 0.6, 1, 1))
   end
   if chase.bustTimer < 0 then
     chase.bustTimer = 10
@@ -2235,7 +2266,7 @@ function nlToggle(label, on, w)
   pill(p, w, 32, false, hf)
   ui.drawRectFilled(vec2(p.x + 10, p.y + 9), vec2(p.x + 38, p.y + 23), lerpC(rgbm(1, 1, 1, 0.12), BLUE, f), 7)
   ui.drawCircleFilled(vec2(p.x + 17 + 14 * f, p.y + 16), 5.5, rgbm(1, 1, 1, 0.95), 12)
-  text(label:upper(), 11, vec2(p.x + 48, p.y + 9), rgbm(1, 1, 1, 0.85 + 0.15 * hf), F_BOLD)
+  text(label:gsub('##.*$', ''):upper(), 11, vec2(p.x + 48, p.y + 9), rgbm(1, 1, 1, 0.85 + 0.15 * hf), F_BOLD)
   return clicked
 end
 
@@ -2248,7 +2279,7 @@ function section(label, col, ic)
   ui.drawRectFilled(vec2(p.x + (ic and 19 or 0) + tw + 10, p.y + 10), vec2(p.x + 560, p.y + 11), rgbm(1, 1, 1, 0.08))
 end
 
-TAB_ICONS = { cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
+TAB_ICONS = { admin = 'admin', cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
   paint = 'paint', interior = 'interior', plate = 'plate', glow = 'glow', looks = 'looks', tune = 'tune', showroom = 'showroom', save = 'save',
   players = 'players', ['time & weather'] = 'weather', server = 'server', camera = 'showroom' }
 
@@ -2767,7 +2798,15 @@ function tabSettings()
       ui.dummy(vec2(1, 12))
       if nlButton('Admin login', 150, RED, 32, 'key') then adminToggle() end
     end
-    text('OR PRESS ' .. ADMIN_KEY:upper(), 8, ui.getCursor() + vec2(4, 2), DIM, F_BOLD)
+    text('ADMIN KEY (CLICK TO REBIND):', 8, ui.getCursor() + vec2(4, 2), DIM, F_BOLD)
+    ui.dummy(vec2(1, 16))
+    if adminButton then
+      local okc = pcall(function() adminButton:control(vec2(180, 28)) end)
+      if not okc then ui.text('current key: ' .. ADMIN_KEY) end
+    else
+      ui.text('current key: ' .. ADMIN_KEY)
+    end
+    text('OR USE THE ADMIN TAB AT THE TOP OF THIS MENU.', 7, ui.getCursor() + vec2(4, 2), DIM, F_BOLD)
     ui.dummy(vec2(1, 14))
   if ENABLE_POLICE or ENABLE_RACE_ZONES then
     ui.separator()
@@ -2859,12 +2898,15 @@ function drawMenu()
       bx = bx + bw + 6
     end
     ui.setCursor(vec2(p.x, p.y + 120))
-    nlTabs('m', { 'Cards', 'Challenges', 'Leaderboard', 'Stats', 'Settings' }, menuUI, W)
-    if menuUI.tab == 1 then tabCards()
-    elseif menuUI.tab == 2 then tabChallenges()
-    elseif menuUI.tab == 3 then tabLeaderboard()
-    elseif menuUI.tab == 4 then tabStats()
-    else tabSettings() end
+    nlTabs('m', { 'Cards', 'Challenges', 'Leaderboard', 'Stats', 'Settings', 'Admin' }, menuUI, W)
+    local okt, errt
+    if menuUI.tab == 1 then okt, errt = pcall(tabCards)
+    elseif menuUI.tab == 2 then okt, errt = pcall(tabChallenges)
+    elseif menuUI.tab == 3 then okt, errt = pcall(tabLeaderboard)
+    elseif menuUI.tab == 4 then okt, errt = pcall(tabStats)
+    elseif menuUI.tab == 5 then okt, errt = pcall(tabSettings)
+    else okt, errt = pcall(tabAdmin) end
+    if not okt then text(('TAB ERROR: ' .. tostring(errt)):sub(1, 120), 8, ui.getCursor() + vec2(4, 4), RED, F_BOLD); dlog('tab error: ' .. tostring(errt)) end
 end
 
 pcall(function()
@@ -3317,6 +3359,18 @@ function drawAdminLogin()
   popKitStyle()
 end
 
+-- the Admin tab inside the ranks menu: no key needed at all
+function tabAdmin()
+  if admin.unlocked then
+    drawAdminMenu()
+  else
+    section('admin access', RED, 'key')
+    drawAdminLogin()
+    ui.dummy(vec2(1, 10))
+    text('THE SAME BOX OPENS WITH THE ' .. ADMIN_KEY:upper() .. ' KEY (REBINDABLE IN SETTINGS).', 7, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+  end
+end
+
 function adminUpdate(dt)
   admin.checkT = admin.checkT + dt
   if admin.checkT > 10 then
@@ -3329,7 +3383,7 @@ function adminUpdate(dt)
 end
 
 adminButton = nil
-pcall(function() adminButton = ac.ControlButton('NL_ADMIN_MENU', { keyboard = { key = ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Home } }) end)
+pcall(function() adminButton = ac.ControlButton('NL_ADMIN_PANEL_2', { keyboard = { key = ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Home } }) end)
 function adminKeyPressed()
   if adminButton then
     local ok, v = pcall(function() return adminButton:pressed() end)
