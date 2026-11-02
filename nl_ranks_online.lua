@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '5.4'
+local VERSION = '5.5'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -27,7 +27,7 @@ local BACKEND = ''
 -- Features. true = on, false = off.
 local ENABLE_POLICE = false        -- blue circles that start a police chase
 local ENABLE_HEAT = true           -- crash a lot in a short time and the police come for you (no circles needed)
-local COP_TOP_KMH = 175            -- police never go faster than this. get above it and you are gone
+local COP_TOP_KMH = 190            -- police never go faster than this. get above it and you are gone
 local COP_MAX_UNITS = 2            -- one unit to start, a second one at 3 stars (stars = crashes while they chase you)
 local COP_SECOND_UNIT_STARS = 3
 local HEAT_CRASHES = 4             -- this many contacts...
@@ -1210,24 +1210,36 @@ local function driveUnit(i, u, dt, me)
   -- where it wants to go, and how fast. the unit is quick but it is not a rocket: it tops out at COP_TOP_KMH,
   -- it only closes at +8 m/s, and once it is right behind you it matches your speed and nudges, it does not slam
   local target, want
+  -- every few seconds, once it is close, it goes for you properly for a moment
+  u.lungeT = u.lungeT or (t + 3)
+  if gap < 16 and behind and t > u.lungeT then
+    u.lungeT = t + 3.5 + math.random() * 3
+    u.lunge = 1.3
+  end
+  if u.lunge and u.lunge > 0 then u.lunge = u.lunge - dt end
+  local lunging = u.lunge and u.lunge > 0
   if gap > 45 or not behind then
     target = trailAhead(u.pos, 22 + 4 * (i - 1))
     if not target or flatDist(target, u.pos) < 3 then target = me.position end
-    want = math.min(pSpeed + 8, topSpd)
+    want = math.min(pSpeed + 11, topSpd)
   elseif u.role == 'ram' then
     target = me.position + me.velocity * 0.3
-    if gap > 14 then want = math.min(pSpeed + 6, topSpd)
-    elseif pSpeed < 14 then want = math.min(pSpeed + 5, 16)      -- you are slow: it comes in and shoves
-    else want = pSpeed + 1.0 end                                  -- you are moving: it sits on your bumper and leans
+    if gap > 14 then want = math.min(pSpeed + 9, topSpd)
+    elseif pSpeed < 14 then want = math.min(pSpeed + 6, 18)      -- you are slow: it comes in and shoves
+    elseif lunging then want = math.min(pSpeed + 7, topSpd)      -- the lunge: it hits your bumper
+    else want = pSpeed + 2.5 end                                  -- otherwise it rides your bumper and leans
   else
     local side = (u.role == 'pitL') and -1 or 1
     local alongside = rel:dot(me.look)
     if alongside > 4 then
       target = me.position - me.look * 1.0 + me.side * side * 2.4
-      want = math.min(pSpeed + 5, topSpd)
+      want = math.min(pSpeed + 8, topSpd)
+    elseif lunging then
+      target = me.position - me.look * 1.4 + me.side * side * 0.2   -- turns in on your rear quarter
+      want = pSpeed + 3
     else
       target = me.position - me.look * 1.2 + me.side * side * 0.6
-      want = pSpeed + 1.0
+      want = pSpeed + 1.5
     end
   end
   if pSpeed < 3 then want = math.max(want, 6) end
@@ -1255,21 +1267,46 @@ local function driveUnit(i, u, dt, me)
     target = target + sideV * 2.5
   end
 
-  -- other cars: it cannot collide with them, so it drives around them instead
+  -- other cars: it steers round the ones it can see coming. a car hidden behind you until you swerve
+  -- at the last second is a car it hits
   local sim = ac.getSim()
+  local pAhead, pLat = rel:dot(u.look), rel:dot(sideV)
+  u.seen = u.seen or {}
   for ci = 0, sim.carsCount - 1 do
     if ci ~= me.index then
       local oc = ac.getCar(ci)
       if oc and oc.isConnected then
         local orel = oc.position - u.pos
         local ahead = orel:dot(u.look)
-        if ahead > 0 and ahead < 22 then
-          local lat = orel:dot(sideV)
-          if math.abs(lat) < 2.6 then
-            local k = 1 - ahead / 22
-            target = target + sideV * ((lat > 0) and -1 or 1) * (3.5 * k + 1.5)
-            if ahead < 7 then want = math.min(want, math.max(3, oc.speedKmh / 3.6 - 1)) end
+        local lat = orel:dot(sideV)
+        if ahead > 0 and ahead < 30 and math.abs(lat) < 2.6 then
+          local hidden = pAhead > 0 and pAhead < ahead and math.abs(pLat - lat) < 1.8
+          if hidden then
+            u.seen[ci] = nil
+          else
+            if not u.seen[ci] then u.seen[ci] = t end
+            local closing = u.spd - oc.speedKmh / 3.6
+            local react = 3 + 0.33 * u.spd
+            if ahead < react and t - u.seen[ci] < 0.3 and closing > 6 and u.spd > 12 and t - (u.lastSpin or -10) > 6 and gap < 40 then
+              u.spin = 1.6 + math.random() * 0.8
+              u.spinDir = (lat > 0) and -1 or 1
+              u.slideDir = vec3(u.look.x, 0, u.look.z)
+              u.spd = u.spd * 0.45
+              u.lastSpin = t
+              chase.lost = (chase.lost or 0) + 1
+              event('POLICE HIT TRAFFIC   +' .. XP.copSpin .. ' xp', rgbm(0.4, 0.8, 1, 1), true)
+              addXP(XP.copSpin, 'sent a cop into traffic', rgbm(0.4, 0.8, 1, 1))
+              hud.lastEvent = t
+              return gap
+            end
+            if ahead < 22 then
+              local k = 1 - ahead / 22
+              target = target + sideV * ((lat > 0) and -1 or 1) * (3.5 * k + 1.5)
+              if ahead < 7 then want = math.min(want, math.max(3, oc.speedKmh / 3.6 - 1)) end
+            end
           end
+        else
+          u.seen[ci] = nil
         end
       end
     end
@@ -1303,7 +1340,7 @@ local function driveUnit(i, u, dt, me)
     if ang > 0.5 then want = math.min(want, math.max(8, 30 - (ang - 0.5) * 18)) end
   end
   if dist < 2 and u.role ~= 'ram' then want = pSpeed end
-  if u.spd < want then u.spd = math.min(want, u.spd + 8 * dt) else u.spd = math.max(want, u.spd - 14 * dt) end
+  if u.spd < want then u.spd = math.min(want, u.spd + 11 * dt) else u.spd = math.max(want, u.spd - 14 * dt) end
   u.pos = u.pos + u.look * (u.spd * dt)
   u.pos.y = u.pos.y + (groundY(u.pos, (gap > 45 and target or me.position).y) - u.pos.y) * math.min(1, dt * 10)
 
@@ -1472,6 +1509,15 @@ local function flipUpdate(dt, me)
   if not ok then event('could not teleport you. use the pause menu to go back to the pits', rgbm(1, 0.5, 0.4, 1)) end
 end
 
+local function chaseContact()
+  if chase.state ~= 'active' then return end
+  hud.lastEvent = t
+  if chase.bustTimer < 0 then
+    chase.bustTimer = 10
+    showBanner('THEY HAVE YOU', '10 seconds to shake them off', rgbm(1, 0.6, 0.2, 1), 2.5)
+  end
+end
+
 local function chaseCrash(me)
   if chase.state ~= 'active' then return end
   chase.stars = math.min(5, (chase.stars or 1) + 1)
@@ -1635,7 +1681,13 @@ local function update(dt)
   lastClose = math.max(0, lastClose - dt * 0.35)
 
   local depth = me.collisionDepth or 0
-  if depth > 0 and t - lastCrash > 1.5 then
+  if depth > 0 and t - lastCrash > 1.5 and chase.state == 'active' and (chase.nearest or 1e9) < 5.5 then
+    -- the police hit you. that is not your crash: no xp lost, no star, but the clock is running
+    lastCrash = t
+    streak = 0
+    endRun(true)
+    chaseContact()
+  elseif depth > 0 and t - lastCrash > 1.5 then
     lastCrash = t
     store.crashes = store.crashes + 1
     streak = 0
