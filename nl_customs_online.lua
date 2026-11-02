@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.4'
+local VERSION = '2.5'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -655,6 +655,22 @@ local function showroomStop()
   if showroom.cam then pcall(function() showroom.cam:dispose() end); showroom.cam = nil; say('Camera back') end
 end
 
+-- camera pose matrix built by hand (mat4x4.look gave a view matrix, which sent the camera flying)
+local function cross(a, b) return vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x) end
+local sideSign = nil
+function camMatrix(pos, look, car)
+  local l = look:normalize()
+  local up = vec3(0, 1, 0)
+  local side = cross(up, l):normalize()
+  if sideSign == nil then
+    sideSign = 1
+    pcall(function() if cross(car.up, car.look):dot(car.side) < 0 then sideSign = -1 end end)
+  end
+  side = side * sideSign
+  local up2 = cross(l, side) * sideSign
+  return mat4x4(vec4(side.x, side.y, side.z, 0), vec4(up2.x, up2.y, up2.z, 0), vec4(l.x, l.y, l.z, 0), vec4(pos.x, pos.y, pos.z, 1))
+end
+
 local function showroomUpdate(dt)
   local cam = showroom.cam
   if not cam then return end
@@ -664,11 +680,12 @@ local function showroomUpdate(dt)
   local a = showroom.angle
   local centre = car.position + car.up * 0.6
   local pos = centre + (car.look * math.cos(a) + car.side * math.sin(a)) * showroom.dist + car.up * (showroom.height - 0.6)
-  pcall(function()
-    cam.transform = mat4x4.look(pos, centre - pos, vec3(0, 1, 0))
+  local ok, err = pcall(function()
+    cam.transform = camMatrix(pos, centre - pos, car)
     cam.fov = showroom.fov
     cam.ownShare = 1
   end)
+  if not ok then dlog('showroom: ' .. tostring(err)) end
 end
 
 ------------------------------------------------------------------ tuning
@@ -1027,18 +1044,29 @@ end
 
 TAB_ICONS = { cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
   paint = 'paint', interior = 'interior', plate = 'plate', glow = 'glow', looks = 'looks', tune = 'tune', showroom = 'showroom', save = 'save',
-  players = 'players', ['time & weather'] = 'weather', server = 'server' }
+  players = 'players', ['time & weather'] = 'weather', server = 'server', camera = 'showroom' }
 
 -- pill tabs with icons
 function nlTabs(id, labels, state, w)
   local p = ui.getCursor()
   local h = 32
-  ui.dummy(vec2(w, h + 10))
+  -- measure, shrink padding until it fits on one row
+  local pad = 26
+  local total = 0
+  local widths = {}
+  repeat
+    total = 0
+    for i, label in ipairs(labels) do
+      local ic = TAB_ICONS[label:lower()]
+      widths[i] = textW(label:upper(), 11, F_BOLD).x + pad + (ic and 18 or 0)
+      total = total + widths[i] + 6
+    end
+    if total > w then pad = pad - 2 end
+  until total <= w or pad <= 12
   local x = p.x
   for i, label in ipairs(labels) do
     local ic = TAB_ICONS[label:lower()]
-    local tw = textW(label:upper(), 11, F_BOLD).x
-    local bw = tw + 30 + (ic and 18 or 0)
+    local bw = widths[i]
     ui.setCursor(vec2(x, p.y))
     ui.invisibleButton('##tab' .. id .. i, vec2(bw, h))
     local hov = ui.itemHovered()
@@ -1046,10 +1074,10 @@ function nlTabs(id, labels, state, w)
     local sel = state.tab == i
     local f = ease('tab' .. id .. i, hov and 1 or 0)
     pill(vec2(x, p.y), bw, h, sel, f)
-    local tx = x + 15
+    local tx = x + pad / 2
     if ic then icon(ic, vec2(tx, p.y + 9), 14, rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f)); tx = tx + 18 end
     text(label:upper(), 11, vec2(tx, p.y + 9), rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f), F_BOLD)
-    x = x + bw + 8
+    x = x + bw + 6
   end
   ui.setCursor(vec2(p.x, p.y + h + 12))
 end
@@ -1139,6 +1167,34 @@ function pushKitStyle()
 end
 function popKitStyle()
   pcall(function() ui.popStyleColor(9); ui.popStyleVar(2) end)
+end
+
+-- scrollable area drawn in the same window (child windows draw at the wrong place in online scripts)
+local scrolls = {}
+function scrollArea(id, w, h, fn)
+  local p = ui.getCursor()
+  local st = scrolls[id] or { y = 0, content = h }
+  scrolls[id] = st
+  local hov = false
+  pcall(function() hov = ui.rectHovered(p, p + vec2(w, h)) end)
+  if hov then pcall(function() local wh = ui.mouseWheel(); if wh and wh ~= 0 then st.y = st.y - wh * 70 end end) end
+  local maxY = math.max(0, st.content - h)
+  st.y = math.max(0, math.min(st.y, maxY))
+  st.vy = ease('scroll' .. id, st.y, 16)
+  pcall(function() ui.pushClipRect(p, p + vec2(w, h), true) end)
+  ui.setCursor(vec2(p.x, p.y - st.vy))
+  fn()
+  local endY = ui.getCursor().y + st.vy
+  st.content = endY - p.y + 12
+  pcall(function() ui.popClipRect() end)
+  if st.content > h then
+    local track = h - 8
+    local th = math.max(24, track * h / st.content)
+    local ty = p.y + 4 + (track - th) * (st.y / math.max(1, st.content - h))
+    ui.drawRectFilled(vec2(p.x + w - 4, p.y + 4), vec2(p.x + w - 1, p.y + 4 + track), rgbm(1, 1, 1, 0.06), 2)
+    ui.drawRectFilled(vec2(p.x + w - 4, ty), vec2(p.x + w - 1, ty + th), withA(BLUE, 0.7), 2)
+  end
+  ui.setCursor(vec2(p.x, p.y + h + 6))
 end
 
 SWATCHES = {
@@ -1231,7 +1287,7 @@ function finishButtons()
 end
 
 function tabPaint()
-  ui.childWindow('##paint', vec2(600, 440), false, 0, function()
+  scrollArea('paint', 600, 440, function()
     pushKitStyle()
     colourBlock('body', 'Body paint', 'paint')
     if enabled.body then finishButtons() end
@@ -1242,7 +1298,7 @@ function tabPaint()
 end
 
 function tabInterior()
-  ui.childWindow('##int', vec2(600, 440), false, 0, function()
+  scrollArea('int', 600, 440, function()
     pushKitStyle()
     colourBlock('leather', 'Leather / alcantara', 'interior')
     colourBlock('accent', 'Trim accents', 'drop')
@@ -1283,7 +1339,7 @@ function tabPlate()
 end
 
 function tabGlow()
-  ui.childWindow('##glow', vec2(600, 440), false, 0, function()
+  scrollArea('glow', 600, 440, function()
     pushKitStyle()
     local p = ui.getCursor()
     local open = enabled.glow
@@ -1323,7 +1379,7 @@ end
 
 function tabLooks()
   section('one click builds. tweak after in paint.', BLUE, 'looks')
-  ui.childWindow('##looks', vec2(600, 400), false, 0, function()
+  scrollArea('looks', 600, 400, function()
     for i, L in ipairs(LOOKS) do
       local p = ui.getCursor()
       ui.invisibleButton('##look' .. i, vec2(186, 118))
@@ -1365,7 +1421,7 @@ function simpleSlider(key, label, left, right)
 end
 
 function tabTune()
-  ui.childWindow('##tune', vec2(600, 440), false, 0, function()
+  scrollArea('tune', 600, 440, function()
     pushKitStyle()
     local p = ui.getCursor()
     ui.dummy(vec2(576, 30))
@@ -1473,7 +1529,7 @@ function tabShowroom()
 end
 
 function tabSave()
-  ui.childWindow('##save', vec2(600, 440), false, 0, function()
+  scrollArea('save', 600, 440, function()
     pushKitStyle()
     section('this build', BLUE, 'save')
     if nlButton('Save build', 130, BLUE, 32, 'save') then saveBuild() end
@@ -1519,7 +1575,7 @@ function drawMenu()
       ui.drawRectFilled(vec2(p.x + W - sw - 20, p.y - 44), vec2(p.x + W, p.y - 26), withA(BLUE, 0.9), 9)
       text(status:upper(), 8, vec2(p.x + W - sw - 10, p.y - 40), rgbm(1, 1, 1, 1), F_BOLD)
     end
-    nlTabs('c', { 'Paint', 'Interior', 'Plate', 'Glow', 'Looks', 'Tune', 'Showroom', 'Save' }, menuUI, W)
+    nlTabs('c', { 'Paint', 'Interior', 'Plate', 'Glow', 'Looks', 'Tune', 'Camera', 'Save' }, menuUI, W)
     local tabs = { tabPaint, tabInterior, tabPlate, tabGlow, tabLooks, tabTune, tabShowroom, tabSave }
     if MENUTAB then menuUI.tab = MENUTAB end
     tabs[menuUI.tab]()

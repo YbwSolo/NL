@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.5'
+local VERSION = '4.6'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -41,7 +41,7 @@ local XP_BOOST = { hours = { 20, 21, 22, 23 }, mult = 2 }
 
 -- Key that opens the menu (name from ui.KeyIndex: Home, End, Insert, F9, F10, M, N ...). Players can rebind it in Settings.
 local MENU_KEY = 'End'
-local ADMIN_KEY = 'Delete'         -- admin panel. only opens after /admin <password> in chat
+local ADMIN_KEY = 'F7'             -- admin panel. only opens after /admin <password> in chat
 local HINT_SECONDS = 30            -- how long the "press HOME" hint stays on the left of the screen after joining
 
 local ENABLE_WANTED = true         -- top run on the server becomes WANTED: 1.5x xp for them, bounty xp for near-missing them
@@ -1037,8 +1037,9 @@ local function poseMatrix(pos, look)
     end)
   end
   if lookIsModel then return mat4x4.look(pos, look, vec3(0, 1, 0)) end
-  local side = vec3(look.z, 0, -look.x)
-  return mat4x4(vec4(side.x, side.y, side.z, 0), vec4(0, 1, 0, 0), vec4(look.x, look.y, look.z, 0), vec4(pos.x, pos.y, pos.z, 1))
+  local l = vec3(look.x, 0, look.z):normalize()
+  local side = vec3(l.z, 0, -l.x)
+  return mat4x4(vec4(side.x, side.y, side.z, 0), vec4(0, 1, 0, 0), vec4(l.x, l.y, l.z, 0), vec4(pos.x, pos.y, pos.z, 1))
 end
 
 -- each unit is a little car of its own: position, heading, speed, with steering and acceleration limits,
@@ -2209,18 +2210,29 @@ end
 
 TAB_ICONS = { cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
   paint = 'paint', interior = 'interior', plate = 'plate', glow = 'glow', looks = 'looks', tune = 'tune', showroom = 'showroom', save = 'save',
-  players = 'players', ['time & weather'] = 'weather', server = 'server' }
+  players = 'players', ['time & weather'] = 'weather', server = 'server', camera = 'showroom' }
 
 -- pill tabs with icons
 function nlTabs(id, labels, state, w)
   local p = ui.getCursor()
   local h = 32
-  ui.dummy(vec2(w, h + 10))
+  -- measure, shrink padding until it fits on one row
+  local pad = 26
+  local total = 0
+  local widths = {}
+  repeat
+    total = 0
+    for i, label in ipairs(labels) do
+      local ic = TAB_ICONS[label:lower()]
+      widths[i] = textW(label:upper(), 11, F_BOLD).x + pad + (ic and 18 or 0)
+      total = total + widths[i] + 6
+    end
+    if total > w then pad = pad - 2 end
+  until total <= w or pad <= 12
   local x = p.x
   for i, label in ipairs(labels) do
     local ic = TAB_ICONS[label:lower()]
-    local tw = textW(label:upper(), 11, F_BOLD).x
-    local bw = tw + 30 + (ic and 18 or 0)
+    local bw = widths[i]
     ui.setCursor(vec2(x, p.y))
     ui.invisibleButton('##tab' .. id .. i, vec2(bw, h))
     local hov = ui.itemHovered()
@@ -2228,10 +2240,10 @@ function nlTabs(id, labels, state, w)
     local sel = state.tab == i
     local f = ease('tab' .. id .. i, hov and 1 or 0)
     pill(vec2(x, p.y), bw, h, sel, f)
-    local tx = x + 15
+    local tx = x + pad / 2
     if ic then icon(ic, vec2(tx, p.y + 9), 14, rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f)); tx = tx + 18 end
     text(label:upper(), 11, vec2(tx, p.y + 9), rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f), F_BOLD)
-    x = x + bw + 8
+    x = x + bw + 6
   end
   ui.setCursor(vec2(p.x, p.y + h + 12))
 end
@@ -2323,6 +2335,34 @@ function popKitStyle()
   pcall(function() ui.popStyleColor(9); ui.popStyleVar(2) end)
 end
 
+-- scrollable area drawn in the same window (child windows draw at the wrong place in online scripts)
+local scrolls = {}
+function scrollArea(id, w, h, fn)
+  local p = ui.getCursor()
+  local st = scrolls[id] or { y = 0, content = h }
+  scrolls[id] = st
+  local hov = false
+  pcall(function() hov = ui.rectHovered(p, p + vec2(w, h)) end)
+  if hov then pcall(function() local wh = ui.mouseWheel(); if wh and wh ~= 0 then st.y = st.y - wh * 70 end end) end
+  local maxY = math.max(0, st.content - h)
+  st.y = math.max(0, math.min(st.y, maxY))
+  st.vy = ease('scroll' .. id, st.y, 16)
+  pcall(function() ui.pushClipRect(p, p + vec2(w, h), true) end)
+  ui.setCursor(vec2(p.x, p.y - st.vy))
+  fn()
+  local endY = ui.getCursor().y + st.vy
+  st.content = endY - p.y + 12
+  pcall(function() ui.popClipRect() end)
+  if st.content > h then
+    local track = h - 8
+    local th = math.max(24, track * h / st.content)
+    local ty = p.y + 4 + (track - th) * (st.y / math.max(1, st.content - h))
+    ui.drawRectFilled(vec2(p.x + w - 4, p.y + 4), vec2(p.x + w - 1, p.y + 4 + track), rgbm(1, 1, 1, 0.06), 2)
+    ui.drawRectFilled(vec2(p.x + w - 4, ty), vec2(p.x + w - 1, ty + th), withA(BLUE, 0.7), 2)
+  end
+  ui.setCursor(vec2(p.x, p.y + h + 6))
+end
+
 function isTopRun()
   if sessionBest <= 0 then return false end
   for _, o in pairs(others) do if o.best and o.best > sessionBest then return false end end
@@ -2394,7 +2434,7 @@ function tabCards()
   if nlButton('Animated only', 150, menuUI.animOnly and BLUE or nil, 32, 'star') then menuUI.animOnly = not menuUI.animOnly end
   ui.setCursor(vec2(p.x, p.y + 44))
   local q = menuUI.search:lower()
-  ui.childWindow('##cards', vec2(600, 400), false, 0, function()
+  scrollArea('cards', 600, 400, function()
     local col = 0
     for i, c in ipairs(CARDS) do
       if (q == '' or c.name:lower():find(q, 1, true)) and (not menuUI.animOnly or c.kind == 'a') then
@@ -2442,7 +2482,7 @@ function goalRow(id, title, value, goal, xp, done, w, ic)
 end
 
 function tabChallenges()
-  ui.childWindow('##chal', vec2(600, 440), false, 0, function()
+  scrollArea('chal', 600, 440, function()
     local w = 576
     if ENABLE_DAILY then
       section('today', BLUE, 'calendar')
@@ -2492,7 +2532,7 @@ function tabLeaderboard()
   local key = keys[menuUI.lbTab]
   table.sort(rows, function(a, b) return a[key] > b[key] end)
   local maxv = math.max(1, rows[1][key])
-  ui.childWindow('##lb', vec2(600, 390), false, 0, function()
+  scrollArea('lb', 600, 390, function()
     for i, r in ipairs(rows) do
       local q = ui.getCursor()
       ui.invisibleButton('##lbr' .. i, vec2(576, 46))
@@ -2530,7 +2570,7 @@ function statTile(x, y, w, label, value, ic, col)
 end
 
 function tabStats()
-  ui.childWindow('##stats', vec2(600, 440), false, 0, function()
+  scrollArea('stats', 600, 440, function()
     section('driving', BLUE, 'car')
     local p = ui.getCursor()
     ui.dummy(vec2(576, 64))
@@ -2597,7 +2637,7 @@ function frameColour(i, R)
 end
 
 function tabSettings()
-  ui.childWindow('##set', vec2(600, 440), false, 0, function()
+  scrollArea('set', 600, 440, function()
     pushKitStyle()
     section('name over your car', BLUE, 'cards')
     if menuUI.nameEdit == nil then menuUI.nameEdit = myTag() end
@@ -2657,6 +2697,10 @@ function tabSettings()
       if duel.state ~= 'idle' and nlButton('Cancel race', 140, RED, 32, 'close') then duelCancel(true) end
     end
     if chase.state ~= 'idle' and nlButton('Cancel chase', 140, RED, 32, 'close') then chaseReset() end
+    if admin.isAdmin then
+      section('admin', RED, 'admin')
+      if nlButton('Open admin panel', 190, RED, 32, 'admin') then admin.open = true; anim['paneladmin'] = 0; menu.open = false end
+    end
   if ENABLE_POLICE or ENABLE_RACE_ZONES then
     ui.separator()
     ui.text('Zones   (' .. zonesSource .. ')')
@@ -2829,7 +2873,7 @@ end
 function adminBoostActive() return adminBoost.until_ > t end
 
 function adminTabPlayers()
-  ui.childWindow('##adm_pl', vec2(600, 400), false, 0, function()
+  scrollArea('adm_pl', 600, 400, function()
     section('players on the server', RED)
     local rows = {}
     local sim = ac.getSim()
@@ -2881,7 +2925,7 @@ function adminTabPlayers()
 end
 
 function adminTabWorld()
-  ui.childWindow('##adm_w', vec2(600, 400), false, 0, function()
+  scrollArea('adm_w', 600, 400, function()
     section('time of day   (changes for everyone, no restart)', RED)
     for i, tm in ipairs(TIMES) do
       if nlButton(tm[1], 100) then cmd(string.format('/settime %02d:%02d', math.floor(tm[2]), math.floor((tm[2] % 1) * 60))) end
@@ -2914,7 +2958,7 @@ function adminTabWorld()
 end
 
 function adminTabServer()
-  ui.childWindow('##adm_s', vec2(600, 400), false, 0, function()
+  scrollArea('adm_s', 600, 400, function()
     section('say something as the server', RED)
     ui.setNextItemWidth(440)
     admin.say = ui.inputText('##say', admin.say)
@@ -2960,13 +3004,13 @@ function adminUpdate(dt)
 end
 
 adminButton = nil
-pcall(function() adminButton = ac.ControlButton('NL_ADMIN_MENU', { keyboard = { key = ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Delete } }) end)
+pcall(function() adminButton = ac.ControlButton('NL_ADMIN_MENU', { keyboard = { key = ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.F7 } }) end)
 function adminKeyPressed()
   if adminButton then
     local ok, v = pcall(function() return adminButton:pressed() end)
     if ok and v == true then return true end
   end
-  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Delete) end)
+  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.F7) end)
   return ok and v == true
 end
 
