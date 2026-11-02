@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.2'
+local VERSION = '4.3'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -37,7 +37,8 @@ local ENABLE_LOGIN_STREAK = true   -- xp for playing on consecutive days
 local XP_BOOST = { hours = { 20, 21, 22, 23 }, mult = 2 }
 
 -- Key that opens the menu (name from ui.KeyIndex: Home, End, Insert, F9, F10, M, N ...). Players can rebind it in Settings.
-local MENU_KEY = 'Home'
+local MENU_KEY = 'End'
+local ADMIN_KEY = 'Delete'         -- admin panel. only opens after /admin <password> in chat
 local HINT_SECONDS = 30            -- how long the "press HOME" hint stays on the left of the screen after joining
 
 local ENABLE_WANTED = true         -- top run on the server becomes WANTED: 1.5x xp for them, bounty xp for near-missing them
@@ -384,6 +385,7 @@ local saveTimer = 0
 local function addXP(n, why, colour, noRun)
   if n == 0 then return end
   if n > 0 and boostActive() then n = n * XP_BOOST.mult end
+  if n > 0 and adminBoostActive and adminBoostActive() then n = n * 2 end
   if n > 0 and store.prestige > 0 then n = n * (1 + 0.05 * store.prestige) end
   if n > 0 and not noRun and ENABLE_WANTED and wantedIndex == 0 then n = n * 1.5 end
   n = math.floor(n + 0.5)
@@ -1013,12 +1015,31 @@ end
 
 ------------------------------------------------------------------ police chase
 
-local chase = { state = 'idle', zone = nil, countdown = 0, time = 0, units = {}, trail = {}, trailTimer = 0, bustTimer = -1, farTimer = 0, lastSpawnT = 0 }
+local chase = { state = 'idle', zone = nil, countdown = 0, time = 0, units = {}, trail = {}, trailTimer = 0, bustTimer = -1, farTimer = 0, lastSpawnT = 0, pinTimer = 0 }
 local POLICE_MODEL = 'nolicense_volkswagen_golf_r_mk8/nolicense_volkswagen_golf_r_mk8.kn5'
 local copModelOK = nil
+local copPhysicsOK = nil
+local lookIsModel = nil
 
-local function makeUnit(pos, delay)
-  local u = { delay = delay, pos = vec3(pos.x, pos.y, pos.z), look = vec3(0, 0, 1), lights = {}, node = nil, flash = math.random() * 10 }
+-- model matrix for a pose. mat4x4.look is checked once; if it turns out to be a view matrix we build the rows ourselves
+local function poseMatrix(pos, look)
+  if lookIsModel == nil then
+    lookIsModel = false
+    pcall(function()
+      local m = mat4x4.look(vec3(10, 2, 3), vec3(0, 0, 1), vec3(0, 1, 0))
+      if m and m.position and (m.position - vec3(10, 2, 3)):length() < 0.01 then lookIsModel = true end
+    end)
+  end
+  if lookIsModel then return mat4x4.look(pos, look, vec3(0, 1, 0)) end
+  local side = vec3(look.z, 0, -look.x)
+  return mat4x4(vec4(side.x, side.y, side.z, 0), vec4(0, 1, 0, 0), vec4(look.x, look.y, look.z, 0), vec4(pos.x, pos.y, pos.z, 1))
+end
+
+-- each unit is a little car of its own: position, heading, speed, with steering and acceleration limits,
+-- plus a physics body so it can actually hit you
+local function makeUnit(pos, look, role)
+  local u = { pos = vec3(pos.x, pos.y, pos.z), look = vec3(look.x, 0, look.z):normalize(), spd = 15, role = role, lights = {}, node = nil, body = nil,
+    flash = math.random() * 10, lastBump = -10, stuck = 0, lastPos = vec3(pos.x, pos.y, pos.z), backT = 0 }
   if copModelOK ~= false then
     local ok, err = pcall(function()
       local path = ac.getFolder(ac.FolderID.ContentCars) .. '/' .. POLICE_MODEL
@@ -1026,13 +1047,18 @@ local function makeUnit(pos, delay)
       u.node = ac.findNodes('dynamicRoot:yes'):loadKN5(path)
       if not u.node or u.node:size() == 0 then error('model empty') end
       copModelOK = true
-      pcall(function() u.node:findMeshes('{ material:ext_Body_Paint }'):setMaterialProperty('ksDiffuse', rgb(0.95, 0.95, 0.95)):setMaterialProperty('ksAmbient', rgb(0.9, 0.9, 0.9)) end)
+      pcall(function() u.node:findMeshes('{ material:ext_Body_Paint }'):ensureUniqueMaterials():setMaterialTexture('txDiffuse', rgbm(0.96, 0.96, 0.96, 1)) end)
     end)
-    if not ok then
-      copModelOK = false
-      u.node = nil
-      dlog('police model unavailable, lights only (' .. tostring(err) .. ')')
-    end
+    if not ok then copModelOK = false; u.node = nil; dlog('police model unavailable, lights only (' .. tostring(err) .. ')') end
+  end
+  if copPhysicsOK ~= false then
+    local ok, err = pcall(function()
+      u.body = physics.RigidBody({ physics.Collider.Box(vec3(1.85, 1.2, 4.4), vec3(0, 0.7, 0)) }, 1500, nil, true, true)
+      u.body:setSemiDynamic(true, true)
+      u.body:setTransformation(poseMatrix(u.pos, u.look), false)
+      copPhysicsOK = true
+    end)
+    if not ok then copPhysicsOK = false; u.body = nil; dlog('police physics unavailable, visual only (' .. tostring(err) .. ')') end
   end
   for i = 1, 2 do
     local ok, l = pcall(function() return ac.LightSource(ac.LightType.Regular) end)
@@ -1050,21 +1076,23 @@ end
 local function disposeUnit(u)
   for _, l in ipairs(u.lights) do pcall(function() l:dispose() end) end
   if u.node then pcall(function() u.node:dispose() end) end
+  if u.body then pcall(function() u.body:dispose() end) end
 end
 
 local function chaseReset()
   for _, u in ipairs(chase.units) do disposeUnit(u) end
-  chase = { state = 'idle', zone = nil, countdown = 0, time = 0, units = {}, trail = {}, trailTimer = 0, bustTimer = -1, farTimer = 0, lastSpawnT = 0 }
+  chase = { state = 'idle', zone = nil, countdown = 0, time = 0, units = {}, trail = {}, trailTimer = 0, bustTimer = -1, farTimer = 0, lastSpawnT = 0, pinTimer = 0 }
   chaseActive = false
   broadcastRank()
 end
 
+local ROLES = { 'ram', 'pitL', 'pitR', 'ram', 'pitL' }
 local function spawnUnit(me, extra)
   local n = #chase.units
   if n >= 5 then return end
-  local behind = me.position - me.look * (35 + n * 12) - me.side * ((n % 2 == 0) and 1.5 or -1.5)
-  local u = makeUnit(behind, 3.0 + n * 1.2 + (extra or 0))
-  u.look = vec3(me.look.x, me.look.y, me.look.z)
+  local behind = me.position - me.look * (40 + n * 10) - me.side * ((n % 2 == 0) and 1.5 or -1.5)
+  local u = makeUnit(behind, me.look, ROLES[n + 1] or 'ram')
+  u.spd = me.speedKmh / 3.6
   chase.units[#chase.units + 1] = u
 end
 
@@ -1103,6 +1131,100 @@ local function heatCrash(me)
   end
 end
 
+-- drive one unit for one frame
+local function driveUnit(i, u, dt, me)
+  local pSpeed = me.speedKmh / 3.6
+  local gap = flatDist(u.pos, me.position)
+  local rel = me.position - u.pos
+  local behind = rel:dot(u.look) > 0          -- player is in front of the unit
+
+  -- where it wants to go
+  local target, want
+  if gap > 45 or not behind then
+    -- far away or player got behind it: follow the road the player took
+    target = trailPointAt(1.2 + 0.4 * (i - 1))
+    if not target or flatDist(target, u.pos) < 3 then target = me.position end
+    want = math.min(pSpeed + 14, 72)
+  elseif u.role == 'ram' then
+    -- aim where the car will be, arrive a bit faster than it
+    target = me.position + me.velocity * 0.35
+    want = pSpeed + (gap > 12 and 9 or 5)
+  else
+    -- come up the side, then lean into the rear quarter (the pit)
+    local side = (u.role == 'pitL') and -1 or 1
+    local lateral = rel:dot(me.side) * -side     -- how far the unit is out to its side (positive = on its side)
+    local alongside = rel:dot(me.look)           -- positive = player ahead of unit
+    if alongside > 4 then
+      target = me.position - me.look * 1.0 + me.side * side * 2.4
+      want = pSpeed + 7
+    else
+      target = me.position - me.look * 1.2 + me.side * side * 0.6
+      want = pSpeed + 1.5
+    end
+  end
+  if pSpeed < 3 then want = math.max(want, 6) end   -- a stopped car still gets hit
+  want = math.max(4, math.min(want, 75))
+
+  -- steer with a turn rate limit, speed with accel limits
+  local d = target - u.pos
+  local dl = vec3(d.x, 0, d.z)
+  local dist = dl:length()
+  if dist > 0.3 then
+    local dir = dl / dist
+    local cross = u.look.x * dir.z - u.look.z * dir.x
+    local dot = math.max(-1, math.min(1, u.look:dot(dir)))
+    local ang = math.acos(dot)
+    local maxTurn = (2.4 - math.min(1.8, u.spd * 0.03)) * dt
+    local turn = math.min(ang, maxTurn) * (cross < 0 and 1 or -1)
+    local c, s = math.cos(turn), math.sin(turn)
+    u.look = vec3(u.look.x * c - u.look.z * s, 0, u.look.x * s + u.look.z * c):normalize()
+    if ang > 1.2 then want = math.min(want, 9) end   -- sharp turn, slow down
+  end
+  if dist < 2 and u.role ~= 'ram' then want = pSpeed end
+  if u.spd < want then u.spd = math.min(want, u.spd + 9 * dt) else u.spd = math.max(want, u.spd - 16 * dt) end
+  u.pos = u.pos + u.look * (u.spd * dt)
+  -- stay at road height: trail / player height
+  local ty = (gap > 45 and target or me.position).y
+  u.pos.y = u.pos.y + (ty - u.pos.y) * math.min(1, dt * 6)
+
+  -- physics body: push our pose in while it is kinematic; if it got knocked, follow it for a moment
+  if u.body then
+    pcall(function()
+      if u.body:isSemiDynamic() then
+        u.body:setTransformation(poseMatrix(u.pos, u.look), true)
+        u.backT = 0
+      else
+        local m = u.body:getTransformation()
+        if m and m.position then
+          u.pos = vec3(m.position.x, m.position.y, m.position.z)
+          local lk = m.look
+          if lk and (lk.x * lk.x + lk.z * lk.z) > 0.01 then u.look = vec3(lk.x, 0, lk.z):normalize() end
+        end
+        u.backT = u.backT + dt
+        if u.backT > 1.2 then u.body:setSemiDynamic(true, true) end
+      end
+    end)
+  end
+
+  -- contact feedback
+  if gap < 4.2 and t - u.lastBump > 2.0 then
+    u.lastBump = t
+    event(u.role == 'ram' and 'RAMMED' or 'PIT MANEUVER', rgbm(0.4, 0.6, 1, 1))
+    hud.lastEvent = t
+  end
+
+  -- visuals
+  u.flash = u.flash + dt * 9
+  local blue = math.floor(u.flash) % 2 == 0
+  for li, l in ipairs(u.lights) do
+    local on = (li == 1) == blue
+    l.position = u.pos + vec3(0, 1.55, 0) + u.look * 0.2 + vec3(-u.look.z, 0, u.look.x) * (li == 1 and 0.45 or -0.45)
+    l.color = (li == 1 and rgb(0.1, 0.3, 3) or rgb(3, 0.1, 0.1)) * (on and 1 or 0.08)
+  end
+  if u.node then pcall(function() u.node:setPosition(u.pos); u.node:setOrientation(u.look, vec3(0, 1, 0)) end) end
+  return gap
+end
+
 local function chaseUpdate(dt, me)
   if not (ENABLE_POLICE or ENABLE_HEAT) then return end
   local speed = me.speedKmh
@@ -1114,11 +1236,17 @@ local function chaseUpdate(dt, me)
         chase.countdown = 3.0
         chase.time = 0
         showBanner('POLICE', 'get moving. they are on you in 3', rgbm(0.3, 0.5, 1, 1), 3)
-        dlog('chase countdown at ' .. (z.name or 'zone'))
         break
       end
     end
     return
+  end
+  -- keep a trail even during the countdown so units have a road to follow
+  chase.trailTimer = chase.trailTimer + dt
+  if chase.trailTimer > 0.1 then
+    chase.trailTimer = 0
+    chase.trail[#chase.trail + 1] = { t = t, p = vec3(me.position.x, me.position.y, me.position.z) }
+    if #chase.trail > 900 then table.remove(chase.trail, 1) end
   end
   if chase.state == 'countdown' then
     chase.countdown = chase.countdown - dt
@@ -1127,65 +1255,22 @@ local function chaseUpdate(dt, me)
       chaseActive = true
       broadcastRank()
       spawnUnit(me)
-      spawnUnit(me, 1.5)
-      chase.pinTimer = 0
-      showBanner('CHASE ON', 'lose them. they will try to ram you and pin you in', rgbm(0.3, 0.5, 1, 1), 2.5)
+      spawnUnit(me)
+      showBanner('CHASE ON', 'lose them. they will ram you and pit you', rgbm(0.3, 0.5, 1, 1), 2.5)
     end
     return
   end
   chase.time = chase.time + dt
   hud.lastEvent = t
-  chase.trailTimer = chase.trailTimer + dt
-  if chase.trailTimer > 0.1 then
-    chase.trailTimer = 0
-    chase.trail[#chase.trail + 1] = { t = t, p = vec3(me.position.x, me.position.y, me.position.z) }
-    if #chase.trail > 900 then table.remove(chase.trail, 1) end
-  end
   local nearest = 1e9
   for i, u in ipairs(chase.units) do
-    if speed > 170 then u.delay = u.delay + dt * 0.18
-    elseif speed > 120 then u.delay = u.delay + dt * 0.03
-    elseif speed > 70 then u.delay = math.max(0.9, u.delay - dt * 0.12)
-    else u.delay = math.max(0.5, u.delay - dt * 0.35) end
-    u.delay = math.min(u.delay, 25)
-    local target = trailPointAt(u.delay + 0.3 * (i - 1))
-    local gap = flatDist(u.pos, me.position)
-    local aggressive = gap < 28
-    if aggressive then
-      -- close enough: go for the car itself. odd units ram the back, even units come up the side to pin
-      local side = (i % 2 == 0) and 1.9 or -1.9
-      if i == 1 then target = me.position - me.look * 1.5
-      else target = me.position + me.look * 1.0 + me.side * side end
-    end
-    if target then
-      local d = target - u.pos
-      local dist = d:length()
-      if dist > 0.05 then
-        local step = math.min(dist, (speed / 3.6 + (aggressive and 22 or 12)) * dt * (aggressive and 1.9 or 1.4))
-        u.pos = u.pos + d * (step / dist)
-        local dl = aggressive and vec3(me.look.x, 0, me.look.z) or vec3(d.x, 0, d.z)
-        if dl:length() > 0.2 then u.look = dl:normalize() end
-      end
-    end
-    if gap < 5 and t - (u.lastBump or -10) > 2.5 then
-      u.lastBump = t
-      event(i == 1 and 'RAMMED' or 'PINNED IN', rgbm(0.4, 0.6, 1, 1))
-      hud.lastEvent = t
-    end
-    u.flash = u.flash + dt * 9
-    local blue = math.floor(u.flash) % 2 == 0
-    for li, l in ipairs(u.lights) do
-      local on = (li == 1) == blue
-      l.position = u.pos + vec3(0, 1.55, 0) + u.look * 0.2 + vec3(-u.look.z, 0, u.look.x) * (li == 1 and 0.45 or -0.45)
-      l.color = (li == 1 and rgb(0.1, 0.3, 3) or rgb(3, 0.1, 0.1)) * (on and 1 or 0.08)
-    end
-    if u.node then pcall(function() u.node:setPosition(u.pos); u.node:setOrientation(u.look, vec3(0, 1, 0)) end) end
-    nearest = math.min(nearest, flatDist(u.pos, me.position))
+    local ok, gap = pcall(driveUnit, i, u, dt, me)
+    if ok and gap then nearest = math.min(nearest, gap) end
   end
   chase.nearest = nearest
   -- boxed in and slow = busted
-  if nearest < 6 and speed < 35 then chase.pinTimer = (chase.pinTimer or 0) + dt else chase.pinTimer = 0 end
-  if (chase.pinTimer or 0) > 3 then
+  if nearest < 7 and speed < 30 then chase.pinTimer = (chase.pinTimer or 0) + dt else chase.pinTimer = 0 end
+  if (chase.pinTimer or 0) > 4 then
     store.busts = store.busts + 1
     showBanner('BUSTED', 'pinned in   ' .. XP.busted .. ' xp', rgbm(1, 0.3, 0.25, 1), 4)
     addXP(XP.busted, 'busted', rgbm(1, 0.3, 0.25, 1), true)
@@ -1223,7 +1308,7 @@ local function chaseCrash(me)
   if chase.state ~= 'active' then return end
   if t - chase.lastSpawnT > 4 then
     chase.lastSpawnT = t
-    spawnUnit(me, 2.5)
+    spawnUnit(me)
     event('another unit joined', rgbm(0.4, 0.6, 1, 1))
   end
   if chase.bustTimer < 0 then
@@ -1698,14 +1783,30 @@ end
 function mix(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
 
 -- small dark tile with a grey label and a white value
-function tile(x, y, w, h, A, value, label, valCol, s, outline)
-  ui.drawRectFilled(vec2(x, y), vec2(x + w, y + h), rgbm(0.04, 0.045, 0.055, 0.82 * A), 5 * s)
-  if outline then ui.drawRect(vec2(x, y), vec2(x + w, y + h), withA(outline, 0.9 * A), 5 * s, ui.CornerFlags.All, 1.5 * s) end
+local hudAnim = { pop = {}, last = {} }
+-- value pop: when a tile's text changes it briefly scales up
+local function popFor(id, value)
+  if hudAnim.last[id] ~= value then hudAnim.last[id] = value; hudAnim.pop[id] = 1 end
+  local p = hudAnim.pop[id] or 0
+  hudAnim.pop[id] = math.max(0, p - 0.08)
+  return p
+end
+
+function tile(x, y, w, h, A, value, label, valCol, s, outline, id, accent)
+  -- soft shadow + body + top accent line
+  ui.drawRectFilled(vec2(x + 1 * s, y + 3 * s), vec2(x + w + 1 * s, y + h + 3 * s), rgbm(0, 0, 0, 0.35 * A), 6 * s)
+  ui.drawRectFilled(vec2(x, y), vec2(x + w, y + h), rgbm(0.05, 0.055, 0.07, 0.86 * A), 6 * s)
+  pcall(function() ui.drawRectFilledMultiColor(vec2(x, y), vec2(x + w, y + h * 0.5), rgbm(1, 1, 1, 0.06 * A), rgbm(1, 1, 1, 0.06 * A), rgbm(1, 1, 1, 0), rgbm(1, 1, 1, 0)) end)
+  if accent then ui.drawRectFilled(vec2(x + 8 * s, y), vec2(x + w - 8 * s, y + 2 * s), withA(accent, 0.9 * A), 1 * s) end
+  if outline then ui.drawRect(vec2(x, y), vec2(x + w, y + h), withA(outline, 0.9 * A), 6 * s, ui.CornerFlags.All, 1.5 * s) end
+  local pop = id and popFor(id, value) or 0
+  local k = 1 + 0.18 * pop
   if label then
-    textC(value, 15 * s, x + w / 2, y + 5 * s, valCol or rgbm(1, 1, 1, A), F_BOLD)
+    if pop > 0 and valCol then ui.drawCircleFilled(vec2(x + w / 2, y + 13 * s), 16 * s * pop, withA(valCol, 0.18 * pop * A), 20) end
+    textC(value, 15 * s * k, x + w / 2, y + 5 * s - 2 * s * pop, valCol or rgbm(1, 1, 1, A), F_BOLD)
     textC(label, 8 * s, x + w / 2, y + 24 * s, rgbm(0.58, 0.6, 0.66, A))
   else
-    textC(value, 17 * s, x + w / 2, y + (h - 20 * s) / 2, valCol or rgbm(1, 1, 1, A), F_BOLD)
+    textC(value, 17 * s * k, x + w / 2, y + (h - 20 * s) / 2 - 2 * s * pop, valCol or rgbm(1, 1, 1, A), F_BOLD)
   end
 end
 
@@ -1782,7 +1883,7 @@ function script.drawUI(dt)
     local mw = 62 * s                    -- multiplier / timer tiles
     local W = tw * 4 + gap * 4 + mw
     local x0 = cx - W / 2
-    local y0 = sh * 0.03 + (1 - A) * -10 * s
+    local y0 = sh * 0.03 + (1 - A) * -14 * s + math.sin(t * 1.3) * 1.5 * s
 
     -- row 1: proximity, speed, combo, pb, total multiplier
     local streakMult = math.min(3, 1 + XP.streakStep * math.max(0, streak - 1))
@@ -1790,11 +1891,13 @@ function script.drawUI(dt)
     local total = speedMult * streakMult
     local sc = speedMult >= 8 and RED or (speedMult >= 5 and rgbm(1, 0.8, 0.2, A) or (speedMult >= 2 and withA(GREEN, A) or rgbm(1, 1, 1, A)))
     local cc = streak >= 5 and rgbm(1, 0.8, 0.2, A) or (streak >= 2 and withA(GREEN, A) or rgbm(1, 1, 1, A))
-    tile(x0, y0, tw, th, A, string.format('%.1fX', proxMult), 'PROXIMITY', lastClose > 0.5 and rgbm(1, 0.8, 0.2, A) or nil, s)
-    tile(x0 + (tw + gap), y0, tw, th, A, string.format('%.1fX', speedMult), 'SPEED', withA(sc, A), s)
-    tile(x0 + (tw + gap) * 2, y0, tw, th, A, 'x' .. streak, 'COMBO', cc, s)
-    tile(x0 + (tw + gap) * 3, y0, tw, th, A, fmtK(store.bestRun), 'PB', nil, s)
-    tile(x0 + (tw + gap) * 4, y0, mw, th, A, string.format('%.1fX', total), nil, total >= 10 and rgbm(1, 0.8, 0.2, A) or rgbm(1, 1, 1, A), s, R.col)
+    tile(x0, y0, tw, th, A, string.format('%.1fX', proxMult), 'PROXIMITY', lastClose > 0.5 and rgbm(1, 0.8, 0.2, A) or nil, s, nil, 'prox', lastClose > 0.5 and GOLD or nil)
+    tile(x0 + (tw + gap), y0, tw, th, A, string.format('%.1fX', speedMult), 'SPEED', withA(sc, A), s, nil, 'spd', speedMult >= 2 and sc or nil)
+    tile(x0 + (tw + gap) * 2, y0, tw, th, A, 'x' .. streak, 'COMBO', cc, s, nil, 'cmb', streak >= 2 and cc or nil)
+    tile(x0 + (tw + gap) * 3, y0, tw, th, A, fmtK(store.bestRun), 'PB', nil, s, nil, 'pb')
+    local totCol = total >= 10 and GOLD or rgbm(1, 1, 1, 1)
+    if total >= 5 then ui.drawCircleFilled(vec2(x0 + (tw + gap) * 4 + mw / 2, y0 + th / 2), (26 + 4 * math.sin(t * 6)) * s, withA(totCol, 0.1 * A), 24) end
+    tile(x0 + (tw + gap) * 4, y0, mw, th, A, string.format('%.1fX', total), nil, withA(totCol, A), s, R.col, 'tot')
 
     -- row 2: main tile in rank colour (crash = red, rank up = flash), run timer on the right
     local y1 = y0 + th + gap
@@ -1815,7 +1918,14 @@ function script.drawUI(dt)
       word = fmt(run.score) .. ' PTS'
       sub = run.pb and 'NEW PB' or R.name:upper()
     end
-    ui.drawRectFilled(vec2(x0, y1), vec2(x0 + mainW, y1 + mh), withA(fill, 0.95 * A), 5 * s)
+    ui.drawRectFilled(vec2(x0 + 1 * s, y1 + 4 * s), vec2(x0 + mainW + 1 * s, y1 + mh + 4 * s), rgbm(0, 0, 0, 0.4 * A), 6 * s)
+    ui.drawRectFilled(vec2(x0, y1), vec2(x0 + mainW, y1 + mh), withA(fill, 0.95 * A), 6 * s)
+    pcall(function() ui.drawRectFilledMultiColor(vec2(x0, y1), vec2(x0 + mainW, y1 + mh * 0.55), rgbm(1, 1, 1, 0.14 * A), rgbm(1, 1, 1, 0.14 * A), rgbm(1, 1, 1, 0), rgbm(1, 1, 1, 0)) end)
+    if run.active and run.score > 0 and not run.lost then
+      local sweep = (t * 0.6) % 1.4 - 0.2
+      local sx = x0 + mainW * sweep
+      pcall(function() ui.drawRectFilledMultiColor(vec2(sx - 40 * s, y1), vec2(sx + 40 * s, y1 + mh), rgbm(1, 1, 1, 0), rgbm(1, 1, 1, 0.12 * A), rgbm(1, 1, 1, 0.12 * A), rgbm(1, 1, 1, 0)) end)
+    end
     -- xp bar along the bottom edge of the main tile
     ui.drawRectFilled(vec2(x0 + 6 * s, y1 + mh - 5 * s), vec2(x0 + mainW - 6 * s, y1 + mh - 2.5 * s), rgbm(0, 0, 0, 0.28 * A), 1 * s)
     ui.drawRectFilled(vec2(x0 + 6 * s, y1 + mh - 5 * s), vec2(x0 + 6 * s + (mainW - 12 * s) * prog, y1 + mh - 2.5 * s), withA(textCol, 0.8 * A), 1 * s)
@@ -1835,16 +1945,17 @@ function script.drawUI(dt)
     local xw = textW(xt, 8 * s)
     text(xt, 8 * s, vec2(x0 + mainW - xw.x - 9 * s, y1 + 18 * s), withA(textCol, 0.6 * A))
     -- word
+    local wpop = popFor('word', word)
     if sub then
-      textC(word, 17 * s, x0 + mainW / 2, y1 + 5 * s, withA(textCol, A), F_BOLD)
+      textC(word, 17 * s * (1 + 0.12 * wpop), x0 + mainW / 2, y1 + 5 * s - 2 * s * wpop, withA(textCol, A), F_BOLD)
       textC(sub, 8 * s, x0 + mainW / 2, y1 + 25 * s, (run.pb and not run.lost) and withA(GOLD, A) or withA(textCol, 0.7 * A), F_BOLD)
     else
-      textC(word, 20 * s, x0 + mainW / 2, y1 + 8 * s, withA(textCol, A), F_BOLD)
+      textC(word, 20 * s * (1 + 0.12 * wpop), x0 + mainW / 2, y1 + 8 * s - 2 * s * wpop, withA(textCol, A), F_BOLD)
     end
     -- run timer tile
     local rt = run.active and run.time or 0
     local tt = string.format('%02d:%02d', math.floor(rt / 60), math.floor(rt % 60))
-    tile(x0 + mainW + gap, y1, mw, mh, A, tt, nil, run.lost and withA(RED, A) or rgbm(1, 1, 1, A), s)
+    tile(x0 + mainW + gap, y1, mw, mh, A, tt, nil, run.lost and withA(RED, A) or rgbm(1, 1, 1, A), s, nil, nil, run.active and GREEN or nil)
 
     -- rank-up rings around the badge (small, never covers the road)
     if la >= 0 and la < 1.6 then
@@ -1866,8 +1977,8 @@ function script.drawUI(dt)
       text(wt, 9 * s, vec2(x0 + 5 * s, y0 - 14 * s), rgbm(1, 1, 1, A), F_BOLD)
     end
     -- xp boost tag
-    if boostActive() then
-      local bt = XP_BOOST.mult .. 'X XP'
+    if boostActive() or adminBoostActive() then
+      local bt = (adminBoostActive() and 2 or XP_BOOST.mult) .. 'X XP'
       local bw = textW(bt, 9 * s, F_BOLD).x
       ui.drawRectFilled(vec2(x0 + W - bw - 10 * s, y0 - 15 * s), vec2(x0 + W, y0 - 3 * s), withA(GOLD, 0.9 * A), 2 * s)
       text(bt, 9 * s, vec2(x0 + W - bw - 5 * s, y0 - 14 * s), rgbm(0.05, 0.05, 0.05, A), F_BOLD)
@@ -2137,21 +2248,36 @@ end
 
 -- challenge / milestone row: text on the left, reward on the right, bar underneath
 function goalRow(id, title, value, goal, xp, done, w)
-  local p = ui.getCursor()
-  ui.dummy(vec2(w, 40))
-  ui.drawRectFilled(p, p + vec2(w, 40), done and withA(GREEN, 0.08) or rgbm(1, 1, 1, 0.045), 6)
-  if done then ui.drawRectFilled(p, vec2(p.x + 3, p.y + 40), GREEN, 1) end
-  text(title, 11, vec2(p.x + 12, p.y + 7), done and GREEN or rgbm(1, 1, 1, 1), F_BOLD)
+  local p0 = ui.getCursor()
+  ui.invisibleButton('##goal' .. id, vec2(w, 44))
+  local hov = ui.itemHovered()
+  local f = ease('goalh' .. id, hov and 1 or 0)
+  local lift = 2 * f
+  local p = vec2(p0.x, p0.y - lift)
+  if f > 0.01 then ui.drawRectFilled(vec2(p.x + 2, p.y + 4), vec2(p.x + w - 2, p.y + 46), rgbm(0, 0, 0, 0.35 * f), 6) end
+  ui.drawRectFilled(p, p + vec2(w, 44), done and withA(GREEN, 0.08 + 0.05 * f) or rgbm(1, 1, 1, 0.045 + 0.05 * f), 6)
+  ui.drawRect(p, p + vec2(w, 44), done and withA(GREEN, 0.3 + 0.4 * f) or rgbm(1, 1, 1, 0.05 + 0.25 * f), 6, ui.CornerFlags.All, 1)
+  ui.drawRectFilled(p, vec2(p.x + 3, p.y + 44), done and GREEN or withA(GOLD, 0.4 + 0.6 * f), 1)
+  text(title, 11, vec2(p.x + 14, p.y + 8), done and GREEN or lerpC(rgbm(0.92, 0.92, 0.95, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
   local r = (done and 'DONE  ' or '') .. '+' .. fmt(xp) .. ' XP'
   local rw = textW(r, 10, F_BOLD).x
-  text(r, 10, vec2(p.x + w - rw - 12, p.y + 7), done and GREEN or GOLD, F_BOLD)
+  local pulse = done and 0 or (0.5 + 0.5 * math.sin(t * 3)) * f
+  text(r, 10 + 1 * pulse, vec2(p.x + w - rw - 14 - 3 * pulse, p.y + 8 - 0.5 * pulse), done and GREEN or GOLD, F_BOLD)
   if not done then
-    local pv = fmt(math.min(value, goal)) .. ' / ' .. fmt(goal)
-    local pw = textW(pv, 8).x
-    text(pv, 8, vec2(p.x + w - pw - 12, p.y + 24), DIM)
-    local f = ease('goal' .. id, math.min(1, value / goal), 6)
-    ui.drawRectFilled(vec2(p.x + 12, p.y + 29), vec2(p.x + w - 90, p.y + 33), rgbm(1, 1, 1, 0.1), 2)
-    if f > 0 then ui.drawRectFilled(vec2(p.x + 12, p.y + 29), vec2(p.x + 12 + math.max(4, (w - 102) * f), p.y + 33), GOLD, 2) end
+    local frac = math.min(1, value / goal)
+    local pv = fmt(math.min(value, goal)) .. ' / ' .. fmt(goal) .. '   ' .. math.floor(frac * 100) .. '%'
+    local pw = textW(pv, 8, F_BOLD).x
+    text(pv, 8, vec2(p.x + w - pw - 14, p.y + 27), lerpC(DIM, rgbm(1, 1, 1, 1), f), F_BOLD)
+    local fe = ease('goal' .. id, frac, 6)
+    local bx2 = p.x + w - pw - 26
+    ui.drawRectFilled(vec2(p.x + 14, p.y + 31), vec2(bx2, p.y + 35), rgbm(1, 1, 1, 0.1), 2)
+    if fe > 0 then
+      local ex = p.x + 14 + math.max(4, (bx2 - p.x - 14) * fe)
+      ui.drawRectFilled(vec2(p.x + 14, p.y + 31), vec2(ex, p.y + 35), GOLD, 2)
+      ui.drawCircleFilled(vec2(ex, p.y + 33), 3 + 2 * f, withA(GOLD, 0.6), 10)
+    end
+  else
+    text('completed', 8, vec2(p.x + 14, p.y + 27), withA(GREEN, 0.7), F_BOLD)
   end
   ui.dummy(vec2(1, 2))
 end
@@ -2433,6 +2559,8 @@ function drawMenu()
     local newN = countNewCards()
     if newN > 0 then badges[#badges + 1] = { newN .. ' NEW CARD' .. (newN > 1 and 'S' or ''), GREEN } end
     if boostActive() then badges[#badges + 1] = { XP_BOOST.mult .. 'X XP', GOLD } end
+    if adminBoostActive() then badges[#badges + 1] = { '2X XP EVENT', GOLD } end
+    if admin.isAdmin then badges[#badges + 1] = { 'ADMIN  ' .. ADMIN_KEY:upper(), RED } end
     if wantedIndex == 0 then badges[#badges + 1] = { 'WANTED', RED } end
     if backendOK then badges[#badges + 1] = { 'SERVER SAVED', DIM } end
     local by = p.y + 16
@@ -2458,7 +2586,7 @@ end)
 
 -- hotkey (rebindable in Settings) opens the same menu as a dialog
 pcall(function()
-  menuButton = ac.ControlButton('NL_RANKS_MENU', { keyboard = { key = ui.KeyIndex[MENU_KEY] or ui.KeyIndex.Home } })
+  menuButton = ac.ControlButton('NL_RANKS_MENU', { keyboard = { key = ui.KeyIndex[MENU_KEY] or ui.KeyIndex.End } })
 end)
 
 function menuKeyPressed()
@@ -2466,23 +2594,231 @@ function menuKeyPressed()
     local ok, v = pcall(function() return menuButton:pressed() end)
     if ok then return v == true end
   end
-  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[MENU_KEY] or ui.KeyIndex.Home) end)
+  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[MENU_KEY] or ui.KeyIndex.End) end)
   return ok and v == true
 end
 
-function openMenu()
-  if menu.open then return end
-  menu.open = true
-  menu.close = false
-  local ok = pcall(function()
-    ui.modalDialog('No License Ranks', function()
-      drawMenu()
-      ui.dummy(vec2(1, 6))
-      if nlButton('Close   ' .. MENU_KEY:upper(), 120) or menu.close then menu.open = false; menu.close = false; return true end
-      return false
-    end, false, function() menu.open = false end)
+-- in-game window with its own frame (drawn with ui.transparentWindow so it works while driving)
+local panelAnim = {}
+function drawPanel(id, title, subtitle, w, h, accent, fn, onClose)
+  local sim = ac.getSim()
+  local f = ease('panel' .. id, 1, 10)
+  local sc = 0.96 + 0.04 * f
+  local pw, ph = w * sc, h * sc
+  local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
+  ui.transparentWindow('nl_' .. id, vec2(px - 20, py - 20), vec2(pw + 40, ph + 40), true, true, function()
+    local o = vec2(20, 20)
+    ui.drawRectFilled(o + vec2(6, 12), o + vec2(pw + 6, ph + 12), rgbm(0, 0, 0, 0.45 * f), 14)
+    ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.055, 0.06, 0.075, 0.97 * f), 12)
+    pcall(function() ui.drawRectFilledMultiColor(o, o + vec2(pw, 70), withA(accent, 0.25 * f), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(accent, 0.04 * f)) end)
+    ui.drawRect(o + vec2(0.5, 0.5), o + vec2(pw - 0.5, ph - 0.5), rgbm(1, 1, 1, 0.09 * f), 12, ui.CornerFlags.All, 1)
+    ui.drawRectFilled(o + vec2(12, 0), o + vec2(pw - 12, 2), withA(accent, 0.8 * f), 1)
+    text(title, 18, o + vec2(18, 14), rgbm(1, 1, 1, f), F_BOLD)
+    if subtitle then text(subtitle, 9, o + vec2(18, 38), withA(DIM, f), F_BOLD) end
+    -- close button
+    ui.setCursor(o + vec2(pw - 40, 12))
+    ui.invisibleButton('##close' .. id, vec2(28, 28))
+    local hov = ui.itemHovered()
+    local hf = ease('close' .. id, hov and 1 or 0)
+    ui.drawCircleFilled(o + vec2(pw - 26, 26), 13, rgbm(1, 1, 1, 0.06 + 0.12 * hf), 20)
+    text('x', 13, o + vec2(pw - 30, 17), rgbm(1, 1, 1, 0.6 + 0.4 * hf), F_BOLD)
+    if ui.itemClicked(ui.MouseButton.Left) then onClose() end
+    ui.setCursor(o + vec2(18, 56))
+    fn()
   end)
-  if not ok then menu.open = false end
+end
+
+function openMenu()
+  menu.open = not menu.open
+  if menu.open then anim['panelmain'] = 0 end
+end
+
+------------------------------------------------------------------ admin panel (only after /admin <password> in chat)
+
+admin = { open = false, tab = 1, tabX = 0, tabW = 0, say = '', time = 20, transition = 60, rain = 0, wet = 0, water = 0, grip = 1.0, checkT = 0, boostMin = 30, announce = '', restrict = 0, ballast = 0, isAdmin = false, log = {} }
+local adminEvent = nil
+local adminBoost = { until_ = -1, mult = 1 }
+
+local WEATHERS = {
+  { 'Clear', 15 }, { 'Few clouds', 16 }, { 'Scattered', 17 }, { 'Broken clouds', 18 }, { 'Overcast', 19 },
+  { 'Fog', 20 }, { 'Mist', 21 }, { 'Haze', 23 }, { 'Windy', 31 },
+  { 'Light drizzle', 3 }, { 'Drizzle', 4 }, { 'Light rain', 6 }, { 'Rain', 7 }, { 'Heavy rain', 8 },
+  { 'Thunderstorm', 1 }, { 'Heavy storm', 2 }, { 'Light snow', 9 }, { 'Snow', 10 }, { 'Hail', 32 },
+}
+local TIMES = { { 'Dawn', 5.5 }, { 'Sunrise', 6.5 }, { 'Morning', 9 }, { 'Noon', 12 }, { 'Afternoon', 15 }, { 'Golden', 17.5 }, { 'Sunset', 19 }, { 'Dusk', 20 }, { 'Night', 22 }, { 'Midnight', 0 } }
+
+local function adminLog(s)
+  admin.log[#admin.log + 1] = s
+  if #admin.log > 8 then table.remove(admin.log, 1) end
+end
+
+local function cmd(c)
+  local ok, err = pcall(function() ac.sendChatMessage(c) end)
+  adminLog((ok and '> ' or 'failed: ') .. c)
+  if not ok then dlog('chat command failed: ' .. tostring(err)) end
+end
+
+pcall(function()
+  adminEvent = ac.OnlineEvent({ ac.StructItem.key('NLAdmin4'), kind = ac.StructItem.byte(), value = ac.StructItem.float(), text = ac.StructItem.string(60) }, function(sender, data)
+    if sender == nil then return end
+    local who = sender.index == 0 and myTag() or driverName(sender.index)
+    if data.kind == 1 then
+      showBanner('ANNOUNCEMENT', tostring(data.text or ''), GOLD, 8)
+      pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Admin: ' .. tostring(data.text or '')) end)
+    elseif data.kind == 2 then
+      adminBoost.until_ = t + (data.value or 30) * 60
+      adminBoost.mult = 2
+      showBanner('2X XP', 'admin boost for ' .. math.floor(data.value or 30) .. ' minutes', GOLD, 6)
+    elseif data.kind == 3 then
+      adminBoost.until_ = -1
+      if chase.state ~= 'idle' then chaseReset() end
+      if duel.state ~= 'idle' then duelReset() end
+      event('admin reset: chases and races cleared', DIM, true)
+    end
+  end)
+end)
+
+local function adminSend(kind, value, textv)
+  if not adminEvent then return end
+  pcall(function() adminEvent({ kind = kind, value = value or 0, text = (textv or ''):sub(1, 59) }, false) end)
+end
+
+function adminBoostActive() return adminBoost.until_ > t end
+
+local function adminTabPlayers()
+  ui.childWindow('##adm_pl', vec2(600, 400), false, 0, function()
+    section('players on the server', RED)
+    local rows = {}
+    local sim = ac.getSim()
+    for i = 0, sim.carsCount - 1 do
+      local c = ac.getCar(i)
+      if c and c.isConnected then rows[#rows + 1] = { i = i, c = c } end
+    end
+    for _, r in ipairs(rows) do
+      local c, i = r.c, r.i
+      local o = others[i]
+      local p = ui.getCursor()
+      ui.dummy(vec2(580, 58))
+      ui.drawRectFilled(p, p + vec2(580, 58), rgbm(1, 1, 1, i == 0 and 0.03 or 0.05), 6)
+      local R = RANKS[(o and o.rank) or rankIndex]
+      if i == 0 then R = RANKS[rankIndex] end
+      ui.drawImage(R.icon, vec2(p.x + 10, p.y + 8), vec2(p.x + 34, p.y + 32), rgbm(1, 1, 1, 1))
+      text((i == 0 and myTag() or driverName(i)) .. (i == 0 and '  (you)' or ''), 12, vec2(p.x + 42, p.y + 8), rgbm(1, 1, 1, 1), F_BOLD)
+      local sid = 0
+      pcall(function() sid = c.sessionID end)
+      local ping = 0
+      pcall(function() ping = c.ping or 0 end)
+      text(string.format('id %d   %s   %d ms   %d km/h', sid or 0, ac.getCarID(i) or '', ping or 0, math.floor(c.speedKmh or 0)), 8, vec2(p.x + 42, p.y + 26), DIM, F_BOLD)
+      if i ~= 0 then
+        ui.setCursor(vec2(p.x + 42, p.y + 36))
+        if nlButton('Pit##' .. i, 54, nil, 20) then cmd('/pit ' .. sid) end
+        ui.sameLine(0, 4)
+        if nlButton('Kick##' .. i, 54, nil, 20) then cmd('/kick_id ' .. sid) end
+        ui.sameLine(0, 4)
+        if nlButton('Ban##' .. i, 54, RED, 20) then cmd('/ban_id ' .. sid) end
+        ui.sameLine(0, 4)
+        if nlButton('Lights on##' .. i, 74, nil, 20) then cmd('/forcelights on ' .. sid) end
+        ui.sameLine(0, 4)
+        if nlButton('Lights off##' .. i, 74, nil, 20) then cmd('/forcelights off ' .. sid) end
+        ui.sameLine(0, 4)
+        if nlButton('Who##' .. i, 46, nil, 20) then cmd('/whois ' .. sid) end
+        ui.sameLine(0, 4)
+        if nlButton('Restrict##' .. i, 66, nil, 20) then cmd('/restrict ' .. sid .. ' ' .. admin.restrict) end
+        ui.sameLine(0, 4)
+        if nlButton('Ballast##' .. i, 62, nil, 20) then cmd('/ballast ' .. sid .. ' ' .. admin.ballast) end
+      end
+      ui.setCursor(vec2(p.x, p.y + 62))
+    end
+    section('values used by restrict / ballast', RED)
+    ui.setNextItemWidth(280)
+    admin.restrict = ui.slider('##restr', admin.restrict, 0, 400, 'Restrictor: %.0f', true)
+    ui.setNextItemWidth(280)
+    admin.ballast = ui.slider('##ball', admin.ballast, 0, 500, 'Ballast: %.0f kg', true)
+  end)
+end
+
+local function adminTabWorld()
+  ui.childWindow('##adm_w', vec2(600, 400), false, 0, function()
+    section('time of day   (changes for everyone, no restart)', RED)
+    for i, tm in ipairs(TIMES) do
+      if nlButton(tm[1], 100) then cmd(string.format('/settime %02d:%02d', math.floor(tm[2]), math.floor((tm[2] % 1) * 60))) end
+      if i % 5 ~= 0 and i < #TIMES then ui.sameLine(0, 6) else ui.dummy(vec2(1, 4)) end
+    end
+    ui.setNextItemWidth(400)
+    admin.time = ui.slider('##time', admin.time, 0, 23.99, 'Custom: %.2f h')
+    ui.sameLine(0, 8)
+    if nlButton('Set time', 100, GOLD) then cmd(string.format('/settime %02d:%02d', math.floor(admin.time), math.floor((admin.time % 1) * 60))) end
+    section('weather   (needs EnableWeatherFx: true in extra_cfg.yml)', RED)
+    for i, w in ipairs(WEATHERS) do
+      if nlButton(w[1], 108) then cmd('/setcspweather ' .. w[2] .. ' ' .. math.floor(admin.transition)) end
+      if i % 5 ~= 0 and i < #WEATHERS then ui.sameLine(0, 6) else ui.dummy(vec2(1, 4)) end
+    end
+    ui.setNextItemWidth(400)
+    admin.transition = ui.slider('##trans', admin.transition, 0, 600, 'Transition: %.0f s', true)
+    section('rain and grip', RED)
+    ui.setNextItemWidth(180) admin.rain = ui.slider('##rain', admin.rain, 0, 1, 'Rain: %.2f')
+    ui.sameLine(0, 6)
+    ui.setNextItemWidth(180) admin.wet = ui.slider('##wet', admin.wet, 0, 1, 'Wetness: %.2f')
+    ui.sameLine(0, 6)
+    ui.setNextItemWidth(180) admin.water = ui.slider('##water', admin.water, 0, 1, 'Water: %.2f')
+    if nlButton('Apply rain', 120, GOLD) then cmd(string.format('/setrain %.2f %.2f %.2f', admin.rain, admin.wet, admin.water)) end
+    ui.sameLine(0, 6)
+    if nlButton('Dry it up', 100) then admin.rain, admin.wet, admin.water = 0, 0, 0; cmd('/setrain 0 0 0') end
+    ui.setNextItemWidth(280) admin.grip = ui.slider('##grip', admin.grip, 0.5, 1, 'Grip: %.2f')
+    ui.sameLine(0, 6)
+    if nlButton('Set grip', 100) then cmd(string.format('/setgrip %.2f', admin.grip)) end
+  end)
+end
+
+local function adminTabServer()
+  ui.childWindow('##adm_s', vec2(600, 400), false, 0, function()
+    section('say something as the server', RED)
+    ui.setNextItemWidth(440)
+    admin.say = ui.inputText('##say', admin.say)
+    ui.sameLine(0, 6)
+    if nlButton('Send', 90, GOLD) and admin.say ~= '' then cmd('/say ' .. admin.say); admin.say = '' end
+    section('announcement on every screen (big gold banner)', RED)
+    ui.setNextItemWidth(440)
+    admin.announce = ui.inputText('##ann', admin.announce)
+    ui.sameLine(0, 6)
+    if nlButton('Announce', 90, GOLD) and admin.announce ~= '' then adminSend(1, 0, admin.announce); admin.announce = '' end
+    section('no license events', RED)
+    ui.setNextItemWidth(240)
+    admin.boostMin = ui.slider('##bm', admin.boostMin, 5, 180, '%.0f minutes', true)
+    ui.sameLine(0, 6)
+    if nlButton('Start 2X XP for everyone', 200, GOLD) then adminSend(2, admin.boostMin, '') end
+    if nlButton('Clear all chases and races', 220) then adminSend(3, 0, '') end
+    section('session', RED)
+    if nlButton('Next session', 130) then cmd('/next_session') end
+    ui.sameLine(0, 6)
+    if nlButton('Restart session', 130) then cmd('/restart_session') end
+    ui.sameLine(0, 6)
+    if nlButton('Noclip on', 100) then cmd('/noclip true') end
+    ui.sameLine(0, 6)
+    if nlButton('Noclip off', 100) then cmd('/noclip false') end
+    section('last commands', RED)
+    for i = #admin.log, 1, -1 do text(admin.log[i], 9, ui.getCursor() + vec2(2, 0), DIM); ui.dummy(vec2(1, 13)) end
+  end)
+end
+
+function drawAdminMenu()
+  nlTabs('a', { 'Players', 'Time & weather', 'Server' }, admin, 600)
+  if admin.tab == 1 then adminTabPlayers() elseif admin.tab == 2 then adminTabWorld() else adminTabServer() end
+end
+
+function adminUpdate(dt)
+  admin.checkT = admin.checkT + dt
+  if admin.checkT > 10 then
+    admin.checkT = 0
+    pcall(function() ac.checkAdminPrivileges() end)
+  end
+  pcall(function() admin.isAdmin = ac.getSim().isAdmin == true end)
+  if admin.open and not admin.isAdmin then admin.open = false end
+end
+
+function adminKeyPressed()
+  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Delete) end)
+  return ok and v == true
 end
 
 local baseDrawUI = script.drawUI
@@ -2491,8 +2827,19 @@ function script.drawUI(dt)
   if not started then return end
   local ok, err = pcall(baseDrawUI, dt)
   if not ok and drawErr ~= tostring(err) then drawErr = tostring(err); dlog('draw error: ' .. drawErr) end
-  if menuKeyPressed() then
-    if menu.open then menu.close = true else openMenu() end
+  if menuKeyPressed() then openMenu() end
+  if menu.open then
+    local okm, errm = pcall(drawPanel, 'main', 'NO LICENSE RANKS', 'press ' .. MENU_KEY:upper() .. ' to close', 620, 690, RANKS[rankIndex].col, drawMenu, function() menu.open = false end)
+    if not okm and drawErr ~= tostring(errm) then drawErr = tostring(errm); dlog('menu error: ' .. drawErr) end
+  end
+  adminUpdate(dt)
+  if adminKeyPressed() then
+    if admin.isAdmin then admin.open = not admin.open; if admin.open then anim['paneladmin'] = 0 end
+    else pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Admin panel: type /admin <password> in chat first.') end) end
+  end
+  if admin.open then
+    local oka, erra = pcall(drawPanel, 'admin', 'NO LICENSE ADMIN', 'server control   -   ' .. ADMIN_KEY:upper() .. ' to close', 640, 560, RED, drawAdminMenu, function() admin.open = false end)
+    if not oka and drawErr ~= tostring(erra) then drawErr = tostring(erra); dlog('admin error: ' .. drawErr) end
   end
   -- hint on the left after joining
   if menu.hintT > 0 then

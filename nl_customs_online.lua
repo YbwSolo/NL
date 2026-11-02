@@ -2,10 +2,10 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.2'
+local VERSION = '2.3'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
-local MENU_KEY = 'End'
+local MENU_KEY = 'Insert'
 local HINT_SECONDS = 30
 
 ------------------------------------------------------------------ car knowledge
@@ -1326,19 +1326,12 @@ end
 function drawMenu()
     local W = 600
     local p = ui.getCursor()
-    ui.dummy(vec2(W, 64))
-    local bc = enabled.body and pick.body or GREEN
-    pcall(function() ui.drawRectFilledMultiColor(p, p + vec2(W, 64), withA(bc, 0.22), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(bc, 0.05)) end)
-    ui.drawRectFilled(vec2(p.x, p.y + 63), vec2(p.x + W, p.y + 64), withA(bc, 0.6))
-    text('NO LICENSE', 20, vec2(p.x + 14, p.y + 12), GREEN, F_BOLD)
-    text('CUSTOMS', 20, vec2(p.x + 14 + textW('NO LICENSE ', 20, F_BOLD).x, p.y + 12), rgbm(1, 1, 1, 1), F_BOLD)
-    text(myCarID, 9, vec2(p.x + 16, p.y + 40), DIM, F_BOLD)
+    ui.dummy(vec2(W, 12))
     if statusTimer > 0 then
       local sw = textW(status, 9, F_BOLD).x
-      ui.drawRectFilled(vec2(p.x + W - sw - 26, p.y + 20), vec2(p.x + W - 10, p.y + 38), withA(GREEN, 0.9), 4)
-      text(status, 9, vec2(p.x + W - sw - 18, p.y + 24), rgbm(0.04, 0.04, 0.05, 1), F_BOLD)
+      ui.drawRectFilled(vec2(p.x + W - sw - 16, p.y - 42), vec2(p.x + W, p.y - 24), withA(GREEN, 0.9), 4)
+      text(status, 9, vec2(p.x + W - sw - 8, p.y - 38), rgbm(0.04, 0.04, 0.05, 1), F_BOLD)
     end
-    ui.setCursor(vec2(p.x, p.y + 70))
     nlTabs('c', { 'Paint', 'Interior', 'Plate', 'Glow', 'Looks', 'Tune', 'Showroom', 'Save' }, menuUI, W)
     local tabs = { tabPaint, tabInterior, tabPlate, tabGlow, tabLooks, tabTune, tabShowroom, tabSave }
     if MENUTAB then menuUI.tab = MENUTAB end
@@ -1351,7 +1344,7 @@ pcall(function()
 end)
 
 pcall(function()
-  menuButton = ac.ControlButton('NL_CUSTOMS_MENU', { keyboard = { key = ui.KeyIndex[MENU_KEY] or ui.KeyIndex.End } })
+  menuButton = ac.ControlButton('NL_CUSTOMS_MENU', { keyboard = { key = ui.KeyIndex[MENU_KEY] or ui.KeyIndex.Insert } })
 end)
 
 local function menuKeyPressed()
@@ -1359,29 +1352,49 @@ local function menuKeyPressed()
     local ok, v = pcall(function() return menuButton:pressed() end)
     if ok then return v == true end
   end
-  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[MENU_KEY] or ui.KeyIndex.End) end)
+  local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[MENU_KEY] or ui.KeyIndex.Insert) end)
   return ok and v == true
 end
 
-local function openMenu()
-  if menu.open then return end
-  menu.open = true
-  menu.close = false
-  local ok = pcall(function()
-    ui.modalDialog('No License Customs', function()
-      drawMenu()
-      ui.dummy(vec2(1, 6))
-      if nlButton('Close   ' .. MENU_KEY:upper(), 120) or menu.close then menu.open = false; menu.close = false; return true end
-      return false
-    end, false, function() menu.open = false end)
+function drawPanel(id, title, subtitle, w, h, accent, fn, onClose)
+  local sim = ac.getSim()
+  local f = ease('panel' .. id, 1, 10)
+  local sc = 0.96 + 0.04 * f
+  local pw, ph = w * sc, h * sc
+  local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
+  ui.transparentWindow('nlc_' .. id, vec2(px - 20, py - 20), vec2(pw + 40, ph + 40), true, true, function()
+    local o = vec2(20, 20)
+    ui.drawRectFilled(o + vec2(6, 12), o + vec2(pw + 6, ph + 12), rgbm(0, 0, 0, 0.45 * f), 14)
+    ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.055, 0.06, 0.075, 0.97 * f), 12)
+    pcall(function() ui.drawRectFilledMultiColor(o, o + vec2(pw, 70), withA(accent, 0.25 * f), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(accent, 0.04 * f)) end)
+    ui.drawRect(o + vec2(0.5, 0.5), o + vec2(pw - 0.5, ph - 0.5), rgbm(1, 1, 1, 0.09 * f), 12, ui.CornerFlags.All, 1)
+    ui.drawRectFilled(o + vec2(12, 0), o + vec2(pw - 12, 2), withA(accent, 0.8 * f), 1)
+    text(title, 18, o + vec2(18, 14), rgbm(1, 1, 1, f), F_BOLD)
+    if subtitle then text(subtitle, 9, o + vec2(18, 38), withA(DIM, f), F_BOLD) end
+    ui.setCursor(o + vec2(pw - 40, 12))
+    ui.invisibleButton('##close' .. id, vec2(28, 28))
+    local hov = ui.itemHovered()
+    local hf = ease('close' .. id, hov and 1 or 0)
+    ui.drawCircleFilled(o + vec2(pw - 26, 26), 13, rgbm(1, 1, 1, 0.06 + 0.12 * hf), 20)
+    text('x', 13, o + vec2(pw - 30, 17), rgbm(1, 1, 1, 0.6 + 0.4 * hf), F_BOLD)
+    if ui.itemClicked(ui.MouseButton.Left) then onClose() end
+    ui.setCursor(o + vec2(18, 56))
+    fn()
   end)
-  if not ok then menu.open = false end
 end
 
+local function openMenu()
+  menu.open = not menu.open
+  if menu.open then anim['panelmain'] = 0 end
+end
+
+local drawErr = nil
 function script.drawUI(dt)
   if not started then return end
-  if menuKeyPressed() then
-    if menu.open then menu.close = true else openMenu() end
+  if menuKeyPressed() then openMenu() end
+  if menu.open then
+    local okm, errm = pcall(drawPanel, 'main', 'NO LICENSE CUSTOMS', myCarID .. '   -   press ' .. MENU_KEY:upper() .. ' to close', 640, 620, enabled.body and pick.body or GREEN, drawMenu, function() menu.open = false end)
+    if not okm and drawErr ~= tostring(errm) then drawErr = tostring(errm); dlog('menu error: ' .. drawErr) end
   end
   if menu.hintT > 0 then
     menu.hintT = menu.hintT - dt
