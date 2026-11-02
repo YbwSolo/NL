@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '3.2'
+local VERSION = '3.3'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -1423,12 +1423,9 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
   local pw, ph = w * sc, h * sc
   local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
   ui.transparentWindow('nl_' .. id, vec2(px - 24, py - 24), vec2(pw + 48, ph + 48), true, true, function()
-    -- the list inside may be taller than the window, so ImGui happily scrolls the whole window on the mouse wheel.
-    -- undo that: draw everything offset by the scroll (so nothing moves) and put the scroll back to zero
-    local sy = 0
-    pcall(function() sy = ui.getScrollY() or 0 end)
-    if sy ~= 0 then pcall(function() ui.setScrollY(0, false, false) end) end
-    local o = vec2(24, 24 + sy)
+    -- the window must never scroll: lists inside do their own scrolling. keep ImGui's scroll pinned at zero
+    pcall(function() if (ui.getScrollY() or 0) ~= 0 then ui.setScrollY(0, false, false) end end)
+    local o = vec2(24, 24)
     ui.drawRectFilled(o + vec2(2, 8), o + vec2(pw + 2, ph + 8), rgbm(0, 0, 0, 0.35 * f), 20)
     ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.016, 0.012, 0.024, 0.86 * f), 20)
     -- header
@@ -1470,6 +1467,11 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
       text('IT IS IN THE CSP LOG TOO (DOCUMENTS / ASSETTO CORSA / LOGS / CUSTOM_SHADERS_PATCH.LOG)', 7, o + vec2(22, 146), DIM, F_BOLD)
     end
     ui.unindent(o.x + 22)
+    -- tell ImGui the content ends inside the window. without this the long lists make the window scrollable
+    -- and the mouse wheel (or the car bouncing the cursor about) throws the whole panel around
+    pcall(function() ui.setMaxCursorY(ph + 40) end)
+    pcall(function() ui.setMaxCursorX(pw + 40) end)
+    pcall(function() if (ui.getScrollY() or 0) ~= 0 then ui.setScrollY(0, false, false) end end)
   end)
 end
 
@@ -2092,7 +2094,6 @@ end
 drawErr = nil
 function script.drawUI(dt)
   if not started then return end
-  pcall(function() ui.applyTransformationToWindows(false) end)   -- our windows stay put when the camera shakes
   if menuKeyPressed() then openMenu() end
   if menu.open then
     local okm, errm = pcall(drawPanel, 'cmain', 'No License Customs', myCarID, 644, 660, BLUE, drawMenu, function() menu.open = false end, 'paint', MENU_KEY)
