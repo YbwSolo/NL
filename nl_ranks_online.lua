@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.4'
+local VERSION = '4.5'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -80,56 +80,59 @@ for i, n in ipairs(NAMES) do
   elseif i < #NAMES then col = rgbm(0.80, 0.35, 1.0, 1)
   else col = rgbm(0.0, 0.96, 0.38, 1) end
   -- steeper curve than before: rank 27 is ~720,000 xp
-  RANKS[i] = { name = n, xp = math.floor(400 * ((i - 1) ^ 2.3)), col = col, icon = string.format('%srank_%02d.png', ICON_BASE, i) }
+  -- the grind: rank 2 at 1,500 xp, rank 10 at ~450k, rank 20 at ~3.2M, NO LICENSE at ~7.2M
+  RANKS[i] = { name = n, xp = math.floor(1500 * ((i - 1) ^ 2.6)), col = col, icon = string.format('%srank_%02d.png', ICON_BASE, i) }
 end
 
 local XP = {
-  perKm = 8, fastKm = 6, veryFastKm = 10, cleanKm = 3,
-  nearMiss = 20, overtake = 4, streakStep = 0.25, streakWindow = 6.0,
-  crashFlat = 100, crashRunPct = 0.30,      -- a crash costs 100 xp plus 30% of the run you were on
-  escape = 600, escapePerUnit = 60, busted = -400,
-  raceWin = 800, raceSecond = 500, raceThird = 300, raceFinish = 150, raceSolo = 100,
-  duelWin = 500, duelLose = 120, duelDraw = 250,
+  perKm = 5, fastKm = 4, veryFastKm = 8, cleanKm = 3,
+  nearMiss = 12, overtake = 3, streakStep = 0.15, streakWindow = 6.0,
+  crashFlat = 300, crashRunPct = 0.30,      -- a crash costs 300 xp plus 30% of the run you were on
+  escape = 4000, escapePerUnit = 500, busted = -2500,
+  raceWin = 3000, raceSecond = 1800, raceThird = 1000, raceFinish = 500, raceSolo = 300,
+  duelWin = 2500, duelLose = 400, duelDraw = 1200,
+  bounty = 600, draftPerSec = 3,
 }
 local NEAR, PASS, MIN_SPEED, MIN_REL = 2.9, 5.0, 60, 12
 
 -- daily challenges: 3 picked per day from this list
 local CHALLENGES = {
-  { id = 'nm25', text = '25 near misses', key = 'dayNear', goal = 25, xp = 600 },
-  { id = 'nm60', text = '60 near misses', key = 'dayNear', goal = 60, xp = 1500 },
-  { id = 'km30', text = 'drive 30 km', key = 'dayKm', goal = 30, xp = 500 },
-  { id = 'km100', text = 'drive 100 km', key = 'dayKm', goal = 100, xp = 1500 },
-  { id = 'top250', text = 'hit 250 km/h', key = 'dayTop', goal = 250, xp = 400 },
-  { id = 'top300', text = 'hit 300 km/h', key = 'dayTop', goal = 300, xp = 1000 },
-  { id = 'streak5', text = 'x5 combo', key = 'dayStreak', goal = 5, xp = 500 },
-  { id = 'streak10', text = 'x10 combo', key = 'dayStreak', goal = 10, xp = 1500 },
-  { id = 'run3k', text = 'a 3,000 point run', key = 'dayRun', goal = 3000, xp = 800 },
-  { id = 'run8k', text = 'an 8,000 point run', key = 'dayRun', goal = 8000, xp = 2000 },
-  { id = 'clean5', text = '5 km with no contact', key = 'dayClean', goal = 5, xp = 600 },
-  { id = 'ot20', text = '20 overtakes', key = 'dayOver', goal = 20, xp = 400 },
-  { id = 'duel1', text = 'win a flash race', key = 'dayDuelWins', goal = 1, xp = 800 },
-  { id = 'duel3', text = 'win 3 flash races', key = 'dayDuelWins', goal = 3, xp = 2000 },
+  { id = 'nm60', text = '60 near misses', key = 'dayNear', goal = 60, xp = 8000 },
+  { id = 'nm150', text = '150 near misses', key = 'dayNear', goal = 150, xp = 20000 },
+  { id = 'km60', text = 'drive 60 km', key = 'dayKm', goal = 60, xp = 7000 },
+  { id = 'km200', text = 'drive 200 km', key = 'dayKm', goal = 200, xp = 22000 },
+  { id = 'top260', text = 'hit 260 km/h', key = 'dayTop', goal = 260, xp = 5000 },
+  { id = 'top310', text = 'hit 310 km/h', key = 'dayTop', goal = 310, xp = 12000 },
+  { id = 'streak8', text = 'x8 combo', key = 'dayStreak', goal = 8, xp = 7000 },
+  { id = 'streak15', text = 'x15 combo', key = 'dayStreak', goal = 15, xp = 20000 },
+  { id = 'run10k', text = 'a 10,000 point run', key = 'dayRun', goal = 10000, xp = 10000 },
+  { id = 'run25k', text = 'a 25,000 point run', key = 'dayRun', goal = 25000, xp = 28000 },
+  { id = 'clean10', text = '10 km with no contact', key = 'dayClean', goal = 10, xp = 9000 },
+  { id = 'ot40', text = '40 overtakes', key = 'dayOver', goal = 40, xp = 6000 },
+  { id = 'duel2', text = 'win 2 flash races', key = 'dayDuelWins', goal = 2, xp = 10000 },
+  { id = 'duel5', text = 'win 5 flash races', key = 'dayDuelWins', goal = 5, xp = 25000 },
 }
 
 -- weekly challenge: one per week, rotates
 local WEEKLY = {
-  { text = '300 near misses this week', key = 'weekNear', goal = 300, xp = 5000 },
-  { text = '250 km this week', key = 'weekKm', goal = 250, xp = 5000 },
-  { text = '10 flash race wins this week', key = 'weekWins', goal = 10, xp = 6000 },
-  { text = '600 near misses this week', key = 'weekNear', goal = 600, xp = 9000 },
+  { text = '800 near misses this week', key = 'weekNear', goal = 800, xp = 60000 },
+  { text = '600 km this week', key = 'weekKm', goal = 600, xp = 60000 },
+  { text = '20 flash race wins this week', key = 'weekWins', goal = 20, xp = 80000 },
+  { text = '1,500 near misses this week', key = 'weekNear', goal = 1500, xp = 120000 },
 }
 
 -- lifetime milestones
 local MILESTONES = {
-  { id = 'km50', text = '50 km driven', key = 'km', goal = 50, xp = 300 },
-  { id = 'km250', text = '250 km driven', key = 'km', goal = 250, xp = 1000 },
-  { id = 'km1000', text = '1,000 km driven', key = 'km', goal = 1000, xp = 3000 },
-  { id = 'km5000', text = '5,000 km driven', key = 'km', goal = 5000, xp = 10000 },
-  { id = 'nm100', text = '100 near misses', key = 'nearMisses', goal = 100, xp = 500 },
-  { id = 'nm1000', text = '1,000 near misses', key = 'nearMisses', goal = 1000, xp = 3000 },
-  { id = 'nm5000', text = '5,000 near misses', key = 'nearMisses', goal = 5000, xp = 10000 },
-  { id = 'dw10', text = '10 flash race wins', key = 'duelWins', goal = 10, xp = 2500 },
-  { id = 'dw50', text = '50 flash race wins', key = 'duelWins', goal = 50, xp = 8000 },
+  { id = 'km100', text = '100 km driven', key = 'km', goal = 100, xp = 5000 },
+  { id = 'km500', text = '500 km driven', key = 'km', goal = 500, xp = 20000 },
+  { id = 'km2000', text = '2,000 km driven', key = 'km', goal = 2000, xp = 60000 },
+  { id = 'km10000', text = '10,000 km driven', key = 'km', goal = 10000, xp = 250000 },
+  { id = 'nm500', text = '500 near misses', key = 'nearMisses', goal = 500, xp = 10000 },
+  { id = 'nm2500', text = '2,500 near misses', key = 'nearMisses', goal = 2500, xp = 50000 },
+  { id = 'nm10000', text = '10,000 near misses', key = 'nearMisses', goal = 10000, xp = 200000 },
+  { id = 'nm30000', text = '30,000 near misses', key = 'nearMisses', goal = 30000, xp = 600000 },
+  { id = 'dw25', text = '25 flash race wins', key = 'duelWins', goal = 25, xp = 40000 },
+  { id = 'dw100', text = '100 flash race wins', key = 'duelWins', goal = 100, xp = 150000 },
 }
 
 -- calling cards. kind: s = static, a = animated. unlock types: free, rank, km, nm (near misses),
@@ -143,42 +146,42 @@ local CARDS = {
   { id = 's_dcoyote', name = 'Demon', kind = 's', unlock = 'rank', goal = 8 },
   { id = 's_nuketown_z', name = 'Serpent', kind = 's', unlock = 'rank', goal = 12 },
   { id = 's_snake', name = 'Ink', kind = 's', unlock = 'rank', goal = 15 },
-  { id = 's_breach', name = 'Breach', kind = 's', unlock = 'km', goal = 50 },
-  { id = 's_elite1', name = 'Midnight GT', kind = 's', unlock = 'km', goal = 250 },
-  { id = 's_seasonpass', name = 'Data Breach', kind = 's', unlock = 'km', goal = 1000 },
-  { id = 's_ben', name = 'Red Blade', kind = 's', unlock = 'nm', goal = 100 },
-  { id = 's_mil', name = 'Pink Fade', kind = 's', unlock = 'nm', goal = 250 },
-  { id = 's_nuketown_2025', name = 'Cyan Edge', kind = 's', unlock = 'wins', goal = 1 },
-  { id = 's_roxann_soldier', name = 'Silver Blade', kind = 's', unlock = 'wins', goal = 5 },
-  { id = 's_massacre', name = 'Sunset Ridge', kind = 's', unlock = 'run', goal = 3000 },
-  { id = 's_partyrock', name = 'Dark Bloom', kind = 's', unlock = 'run', goal = 8000 },
+  { id = 's_breach', name = 'Breach', kind = 's', unlock = 'km', goal = 150 },
+  { id = 's_elite1', name = 'Midnight GT', kind = 's', unlock = 'km', goal = 600 },
+  { id = 's_seasonpass', name = 'Data Breach', kind = 's', unlock = 'km', goal = 2500 },
+  { id = 's_ben', name = 'Red Blade', kind = 's', unlock = 'nm', goal = 400 },
+  { id = 's_mil', name = 'Pink Fade', kind = 's', unlock = 'nm', goal = 1000 },
+  { id = 's_nuketown_2025', name = 'Cyan Edge', kind = 's', unlock = 'wins', goal = 3 },
+  { id = 's_roxann_soldier', name = 'Silver Blade', kind = 's', unlock = 'wins', goal = 15 },
+  { id = 's_massacre', name = 'Sunset Ridge', kind = 's', unlock = 'run', goal = 12000 },
+  { id = 's_partyrock', name = 'Dark Bloom', kind = 's', unlock = 'run', goal = 30000 },
   { id = 's_ghost', name = 'Red Lambo', kind = 's', unlock = 'top', goal = 280 },
-  { id = 's_dragonfire', name = 'Hellfire', kind = 's', unlock = 'combo', goal = 8 },
-  { id = 's_pap', name = 'Hypno', kind = 's', unlock = 'combo', goal = 12 },
-  { id = 's_graf', name = 'Blossom', kind = 's', unlock = 'daily', goal = 3 },
-  { id = 's_zombies', name = 'Slayer', kind = 's', unlock = 'daily', goal = 10 },
-  { id = 's_kawaii', name = 'Old Master', kind = 's', unlock = 'days', goal = 3 },
-  { id = 's_zulu', name = 'Sakura', kind = 's', unlock = 'days', goal = 7 },
+  { id = 's_dragonfire', name = 'Hellfire', kind = 's', unlock = 'combo', goal = 10 },
+  { id = 's_pap', name = 'Hypno', kind = 's', unlock = 'combo', goal = 15 },
+  { id = 's_graf', name = 'Blossom', kind = 's', unlock = 'daily', goal = 10 },
+  { id = 's_zombies', name = 'Slayer', kind = 's', unlock = 'daily', goal = 30 },
+  { id = 's_kawaii', name = 'Old Master', kind = 's', unlock = 'days', goal = 5 },
+  { id = 's_zulu', name = 'Sakura', kind = 's', unlock = 'days', goal = 14 },
   { id = 'a_afterlife', name = 'Afterlife', kind = 'a', frames = 32, fps = 20, unlock = 'rank', goal = 10 },
-  { id = 'a_fire', name = 'Inferno', kind = 'a', frames = 32, fps = 20, unlock = 'nm', goal = 500 },
-  { id = 'a_gameover', name = 'Game Over', kind = 'a', frames = 32, fps = 20, unlock = 'wins', goal = 10 },
+  { id = 'a_fire', name = 'Inferno', kind = 'a', frames = 32, fps = 20, unlock = 'nm', goal = 2000 },
+  { id = 'a_gameover', name = 'Game Over', kind = 'a', frames = 32, fps = 20, unlock = 'wins', goal = 30 },
   { id = 'a_goku', name = 'Ultra', kind = 'a', frames = 32, fps = 20, unlock = 'rank', goal = 18 },
-  { id = 'a_kakashi', name = 'Sharingan', kind = 'a', frames = 32, fps = 8, unlock = 'run', goal = 15000 },
-  { id = 'a_kaneki', name = 'Ghoul', kind = 'a', frames = 32, fps = 12.0, unlock = 'nm', goal = 1000 },
-  { id = 'a_panda', name = 'Mad Panda', kind = 'a', frames = 32, fps = 20, unlock = 'days', goal = 14 },
-  { id = 'a_magicball', name = 'Arcane', kind = 'a', frames = 32, fps = 20, unlock = 'combo', goal = 15 },
+  { id = 'a_kakashi', name = 'Sharingan', kind = 'a', frames = 32, fps = 8, unlock = 'run', goal = 60000 },
+  { id = 'a_kaneki', name = 'Ghoul', kind = 'a', frames = 32, fps = 12.0, unlock = 'nm', goal = 4000 },
+  { id = 'a_panda', name = 'Mad Panda', kind = 'a', frames = 32, fps = 20, unlock = 'days', goal = 30 },
+  { id = 'a_magicball', name = 'Arcane', kind = 'a', frames = 32, fps = 20, unlock = 'combo', goal = 20 },
   { id = 'a_storm', name = 'Storm', kind = 'a', frames = 16, fps = 18.2, unlock = 'top', goal = 300 },
-  { id = 'a_sunset', name = 'Horizon', kind = 'a', frames = 32, fps = 20, unlock = 'km', goal = 2500 },
-  { id = 'a_tornado', name = 'Tornado', kind = 'a', frames = 32, fps = 20, unlock = 'wins', goal = 25 },
+  { id = 'a_sunset', name = 'Horizon', kind = 'a', frames = 32, fps = 20, unlock = 'km', goal = 6000 },
+  { id = 'a_tornado', name = 'Tornado', kind = 'a', frames = 32, fps = 20, unlock = 'wins', goal = 60 },
   { id = 'a_orb', name = 'Core', kind = 'a', frames = 32, fps = 20, unlock = 'rank', goal = 22 },
   { id = 'a_trippy', name = 'Trippy', kind = 'a', frames = 32, fps = 20, unlock = 'rank', goal = 27 },
-  { id = 'a_v1_starlight', name = 'Starlight', kind = 'a', frames = 32, fps = 16, unlock = 'combo', goal = 10 },
-  { id = 'a_v1_assassin', name = 'Assassin', kind = 'a', frames = 32, fps = 16, unlock = 'nm', goal = 2500 },
-  { id = 'a_v1_vortex', name = 'Vortex', kind = 'a', frames = 32, fps = 16, unlock = 'daily', goal = 20 },
+  { id = 'a_v1_starlight', name = 'Starlight', kind = 'a', frames = 32, fps = 16, unlock = 'combo', goal = 15 },
+  { id = 'a_v1_assassin', name = 'Assassin', kind = 'a', frames = 32, fps = 16, unlock = 'nm', goal = 8000 },
+  { id = 'a_v1_vortex', name = 'Vortex', kind = 'a', frames = 32, fps = 16, unlock = 'daily', goal = 50 },
   { id = 'a_v1_pulse', name = 'Pulse', kind = 'a', frames = 32, fps = 16, unlock = 'top', goal = 320 },
-  { id = 'a_v1_ascend', name = 'Ascend', kind = 'a', frames = 32, fps = 16, unlock = 'combo', goal = 20 },
-  { id = 'a_v1_nightfall', name = 'Nightfall', kind = 'a', frames = 32, fps = 16, unlock = 'wins', goal = 50 },
-  { id = 'a_v1_blade', name = 'Blade', kind = 'a', frames = 32, fps = 16, unlock = 'days', goal = 30 },
+  { id = 'a_v1_ascend', name = 'Ascend', kind = 'a', frames = 32, fps = 16, unlock = 'combo', goal = 30 },
+  { id = 'a_v1_nightfall', name = 'Nightfall', kind = 'a', frames = 32, fps = 16, unlock = 'wins', goal = 120 },
+  { id = 'a_v1_blade', name = 'Blade', kind = 'a', frames = 32, fps = 16, unlock = 'days', goal = 60 },
   { id = 'a_og_undead', name = 'Undead', kind = 'a', frames = 30, fps = 16, unlock = 'rank', goal = 2 },
   { id = 'a_og_anarchy', name = 'Anarchy', kind = 'a', frames = 20, fps = 10, unlock = 'rank', goal = 4 },
   { id = 'a_og_beast', name = 'Beast', kind = 'a', frames = 30, fps = 16, unlock = 'rank', goal = 6 },
@@ -407,7 +410,7 @@ local function addXP(n, why, colour, noRun)
     run.score = run.score + n
     run.active = true
     run.lost = false
-    if run.score > store.bestRun and run.score > 400 and not run.pb then
+    if run.score > store.bestRun and run.score > 2000 and not run.pb then
       run.pb = true
       event('NEW PERSONAL BEST', GOLD, true)
     end
@@ -964,7 +967,7 @@ local function loginCheck()
   if store.lastLoginKey == today then return end
   if store.lastLoginKey == yesterday then store.loginStreak = store.loginStreak + 1 else store.loginStreak = 1 end
   store.lastLoginKey = today
-  local bonus = math.min(1000, store.loginStreak * 100)
+  local bonus = math.min(5000, store.loginStreak * 500)
   showBanner('DAY ' .. store.loginStreak .. ' STREAK', 'welcome back   +' .. fmt(bonus) .. ' xp', GOLD, 5)
   addXP(bonus, 'login streak', GOLD, true)
 end
@@ -1504,7 +1507,7 @@ local function update(dt)
     if drafting then
       draft.timer = draft.timer + dt
       if draft.timer > 2 then
-        draft.bank = draft.bank + dt * 4 * speedMult
+        draft.bank = draft.bank + dt * XP.draftPerSec * speedMult
         draft.tick = draft.tick + dt
         if draft.tick > 2 then draft.tick = 0; addXP(draft.bank, 'DRAFTING', rgbm(0.6, 0.85, 1, 1)); draft.bank = 0 end
       end
@@ -1539,12 +1542,12 @@ local function update(dt)
                 session.nearMisses = session.nearMisses + 1
                 local close = (NEAR - alat) / NEAR
                 lastClose = math.max(lastClose, close)
-                local mult = math.min(3, 1 + XP.streakStep * (streak - 1))
-                local pts = (XP.nearMiss + close * 40 + speed / 10) * mult * (1 + (speedMult - 1) * 0.15)
+                local mult = math.min(2.2, 1 + XP.streakStep * (streak - 1))
+                local pts = (XP.nearMiss + close * 22 + speed / 20) * mult * (1 + (speedMult - 1) * 0.1)
                 local label = close > 0.65 and 'INSANE NEAR MISS' or (close > 0.35 and 'CLOSE NEAR MISS' or 'NEAR MISS')
                 if streak > 1 then label = label .. '  x' .. streak end
                 addXP(pts, label, close > 0.65 and rgbm(1, 0.85, 0.2, 1) or rgbm(0, 0.94, 0.35, 1))
-                if ENABLE_WANTED and i == wantedIndex then addXP(150, 'BOUNTY HIT  ' .. driverName(i), GOLD) end
+                if ENABLE_WANTED and i == wantedIndex then addXP(XP.bounty, 'BOUNTY HIT  ' .. driverName(i), GOLD) end
                 if streak >= 10 and not onFire then onFire = true; showBanner('ON FIRE', 'x' .. streak .. ' combo', rgbm(1, 0.5, 0.1, 1), 2.5); broadcastRank() end
               elseif alat < PASS then
                 store.overtakes = store.overtakes + 1
@@ -1587,7 +1590,7 @@ local function update(dt)
       if who ~= wantedIndex then
         wantedIndex = who
         if who == 0 then showBanner('YOU ARE WANTED', '1.5x xp while you hold the top run. everyone gets a bounty for near missing you', RED, 4)
-        elseif who > 0 then event(driverName(who) .. ' is WANTED   +150 per near miss on them', RED, true) end
+        elseif who > 0 then event(driverName(who) .. ' is WANTED   +' .. XP.bounty .. ' per near miss on them', RED, true) end
       end
     end
   end
@@ -1889,7 +1892,7 @@ function script.drawUI(dt)
     local y0 = sh * 0.03 + (1 - A) * -14 * s + math.sin(t * 1.3) * 1.5 * s
 
     -- row 1: proximity, speed, combo, pb, total multiplier
-    local streakMult = math.min(3, 1 + XP.streakStep * math.max(0, streak - 1))
+    local streakMult = math.min(2.2, 1 + XP.streakStep * math.max(0, streak - 1))
     local proxMult = 1 + lastClose * 2
     local total = speedMult * streakMult
     local sc = speedMult >= 8 and RED or (speedMult >= 5 and rgbm(1, 0.8, 0.2, A) or (speedMult >= 2 and withA(GREEN, A) or rgbm(1, 1, 1, A)))
@@ -2465,7 +2468,7 @@ function tabChallenges()
         text(tostring(d), 9, vec2(cx - 3, cy - 6), on and rgbm(1, 1, 1, 1) or DIM, F_BOLD)
       end
       text('DAY ' .. store.loginStreak, 12, vec2(p.x + 280, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
-      text('+' .. fmt(math.min(1000, (store.loginStreak + 1) * 100)) .. ' XP TOMORROW', 8, vec2(p.x + 280, p.y + 30), DIM, F_BOLD)
+      text('+' .. fmt(math.min(5000, (store.loginStreak + 1) * 500)) .. ' XP TOMORROW', 8, vec2(p.x + 280, p.y + 30), DIM, F_BOLD)
     end
     section('milestones', BLUE, 'medal')
     for _, m in ipairs(MILESTONES) do goalRow(m.id, m.text, store[m.key] or 0, m.goal, m.xp, hasFlag(store.milestonesDone, m.id), w, 'medal') end
@@ -2578,7 +2581,7 @@ function tabStats()
     section('how xp works', BLUE, 'info')
     for _, line in ipairs({
       'Near misses are the main earner. Closer = more. Chain them for a combo, go faster for a speed multiplier.',
-      'A crash costs 100 xp plus 30% of the run you were on. You never lose a rank you have reached.',
+      'A crash costs ' .. XP.crashFlat .. ' xp plus 30% of the run you were on. You never lose a rank you have reached.',
       'Draft behind another player above 120 km/h for xp. x10 combo puts you ON FIRE for the whole server to see.',
       'Hold the best run of the night and you are WANTED: 1.5x xp, but everyone gets a bounty for near missing you.',
       'Crash ' .. HEAT_CRASHES .. ' times in ' .. HEAT_WINDOW .. ' s and the police come. Lose them for big xp, get pinned and lose some.',
