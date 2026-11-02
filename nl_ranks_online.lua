@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '5.0'
+local VERSION = '5.2'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -1100,12 +1100,31 @@ local function chaseReset()
   broadcastRank()
 end
 
+-- road height under a point: real raycast when CSP allows it, otherwise the nearest point of the player's trail
+local function groundY(pos, fallback)
+  local gy = nil
+  pcall(function()
+    local d = physics.raycastTrack(vec3(pos.x, pos.y + 3, pos.z), vec3(0, -1, 0), 14)
+    if d and d > 0 then gy = pos.y + 3 - d end
+  end)
+  if gy then return gy end
+  local tr = chase.trail
+  local best, bestD = nil, 1e9
+  for i = #tr, math.max(1, #tr - 400), -1 do
+    local d = flatDist(tr[i].p, pos)
+    if d < bestD then bestD, best = d, tr[i].p.y end
+  end
+  if best and bestD < 60 then return best end
+  return fallback
+end
+
 local ROLES = { 'ram', 'pitL', 'pitR', 'ram', 'pitL' }
 local function spawnUnit(me, extra)
   local n = #chase.units
   if n >= COP_MAX_UNITS then return end
   if n >= 1 and (chase.stars or 0) < COP_SECOND_UNIT_STARS then return end
   local behind = me.position - me.look * (40 + n * 10) - me.side * ((n % 2 == 0) and 1.5 or -1.5)
+  behind.y = groundY(behind, me.position.y)
   local u = makeUnit(behind, me.look, ROLES[n + 1] or 'ram')
   u.spd = me.speedKmh / 3.6
   chase.units[#chase.units + 1] = u
@@ -1179,7 +1198,7 @@ local function driveUnit(i, u, dt, me)
     u.look = vec3(u.look.x * c - u.look.z * sn, 0, u.look.x * sn + u.look.z * c):normalize()
     u.spd = math.max(0, u.spd - 14 * dt)
     u.pos = u.pos + u.slideDir * (u.spd * dt)
-    u.pos.y = u.pos.y + (me.position.y - u.pos.y) * math.min(1, dt * 6)
+    u.pos.y = u.pos.y + (groundY(u.pos, me.position.y) - u.pos.y) * math.min(1, dt * 10)
     if u.body then pcall(function() if u.body:isSemiDynamic() then u.body:setTransformation(poseMatrix(u.pos, u.look), true) end end) end
     if u.node then pcall(function() u.node:setPosition(u.pos); u.node:setOrientation(u.look, vec3(0, 1, 0)) end) end
     for li, l in ipairs(u.lights) do l.position = u.pos + vec3(0, 1.55, 0) + vec3(-u.look.z, 0, u.look.x) * (li == 1 and 0.45 or -0.45) end
@@ -1212,6 +1231,48 @@ local function driveUnit(i, u, dt, me)
   if pSpeed < 3 then want = math.max(want, 6) end
   want = math.max(4, math.min(want, topSpd))
 
+  -- walls: three short rays ahead. something in the way -> steer to the clearer side and slow down
+  local sideV = vec3(-u.look.z, 0, u.look.x)
+  local function ray(dir, len)
+    local d = nil
+    pcall(function() d = physics.raycastTrack(vec3(u.pos.x, u.pos.y + 1.1, u.pos.z), dir, len) end)
+    if d and d > 0 then return d end
+    return nil
+  end
+  local fwd = ray(u.look, 9)
+  local lft = ray((u.look + sideV * 0.7):normalize(), 7)
+  local rgt = ray((u.look - sideV * 0.7):normalize(), 7)
+  if fwd then
+    local steer = ((lft or 99) >= (rgt or 99)) and 1 or -1
+    target = u.pos + u.look * 4 + sideV * steer * 6
+    want = math.min(want, 4 + fwd * 2.2)
+    u.wallT = t
+  elseif lft and lft < 3.5 then
+    target = target - sideV * 2.5
+  elseif rgt and rgt < 3.5 then
+    target = target + sideV * 2.5
+  end
+
+  -- other cars: it cannot collide with them, so it drives around them instead
+  local sim = ac.getSim()
+  for ci = 0, sim.carsCount - 1 do
+    if ci ~= me.index then
+      local oc = ac.getCar(ci)
+      if oc and oc.isConnected then
+        local orel = oc.position - u.pos
+        local ahead = orel:dot(u.look)
+        if ahead > 0 and ahead < 22 then
+          local lat = orel:dot(sideV)
+          if math.abs(lat) < 2.6 then
+            local k = 1 - ahead / 22
+            target = target + sideV * ((lat > 0) and -1 or 1) * (3.5 * k + 1.5)
+            if ahead < 7 then want = math.min(want, math.max(3, oc.speedKmh / 3.6 - 1)) end
+          end
+        end
+      end
+    end
+  end
+
   -- steer with a turn rate limit. ask too much of it at speed and it loses the back end
   local d = target - u.pos
   local dl = vec3(d.x, 0, d.z)
@@ -1221,7 +1282,7 @@ local function driveUnit(i, u, dt, me)
     local cross = u.look.x * dir.z - u.look.z * dir.x
     local dot = math.max(-1, math.min(1, u.look:dot(dir)))
     local ang = math.acos(dot)
-    if ang > 0.85 and u.spd > 17 and gap < 40 and t - (u.lastSpin or -10) > 8 then
+    if ang > 0.85 and u.spd > 17 and gap < 40 and t - (u.lastSpin or -10) > 8 and t - (u.wallT or -10) > 1.5 then
       -- you swerved and it could not follow: spin out for a few seconds
       u.spin = 2.6 + math.random() * 1.2
       u.spinDir = cross > 0 and 1 or -1
@@ -1242,8 +1303,7 @@ local function driveUnit(i, u, dt, me)
   if dist < 2 and u.role ~= 'ram' then want = pSpeed end
   if u.spd < want then u.spd = math.min(want, u.spd + 8 * dt) else u.spd = math.max(want, u.spd - 14 * dt) end
   u.pos = u.pos + u.look * (u.spd * dt)
-  local ty = (gap > 45 and target or me.position).y
-  u.pos.y = u.pos.y + (ty - u.pos.y) * math.min(1, dt * 6)
+  u.pos.y = u.pos.y + (groundY(u.pos, (gap > 45 and target or me.position).y) - u.pos.y) * math.min(1, dt * 10)
 
   -- physics body: push our pose in while it is kinematic; if it got knocked, follow it for a moment
   if u.body then
@@ -1366,7 +1426,7 @@ local function chaseUpdate(dt, me)
     chase.bustTimer = chase.bustTimer - dt
     if chase.bustTimer <= 0 then
       chase.bustTimer = -1
-      if nearest < 45 then
+      if nearest < 12 and speed < 50 then
         store.busts = store.busts + 1
         showBanner('BUSTED', 'they had you   ' .. XP.busted .. ' xp', rgbm(1, 0.3, 0.25, 1), 4)
         addXP(XP.busted, 'busted', rgbm(1, 0.3, 0.25, 1), true)
@@ -3423,6 +3483,7 @@ baseDrawUI = script.drawUI
 drawErr = nil
 function script.drawUI(dt)
   if not started then return end
+  pcall(function() ui.applyTransformationToWindows(false) end)   -- our windows stay put when the camera shakes
   local ok, err = pcall(baseDrawUI, dt)
   if not ok and drawErr ~= tostring(err) then drawErr = tostring(err); dlog('draw error: ' .. drawErr) end
   if menuKeyPressed() then openMenu() end

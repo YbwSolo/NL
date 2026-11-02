@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '3.1'
+local VERSION = '3.2'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -2092,6 +2092,7 @@ end
 drawErr = nil
 function script.drawUI(dt)
   if not started then return end
+  pcall(function() ui.applyTransformationToWindows(false) end)   -- our windows stay put when the camera shakes
   if menuKeyPressed() then openMenu() end
   if menu.open then
     local okm, errm = pcall(drawPanel, 'cmain', 'No License Customs', myCarID, 644, 660, BLUE, drawMenu, function() menu.open = false end, 'paint', MENU_KEY)
