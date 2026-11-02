@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '5.5'
+local VERSION = '5.6'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -36,6 +36,9 @@ local FLIP_TO_PITS = true          -- on your roof and not moving = sent back to
 local FLIP_SECONDS = 4             -- how long you can sit flipped before it happens
 local ENABLE_RACE_ZONES = false    -- red circles that start a race lobby
 local ENABLE_FLASH_RACE = true     -- stop next to someone, both flash headlights twice = 60 s race
+local ENABLE_RUNS = true           -- delivery runs: a drop-off somewhere you have driven before, a clock, xp for getting there
+local RUN_KEY = 'NumPad0'          -- takes the run that is on offer (or click the toast, or Start a run in the Challenges tab)
+local ENABLE_CONVOY = true         -- drive with friends: 2+ players close together at speed = convoy xp for all of them
 local ENABLE_DAILY = true          -- 3 daily challenges
 local ENABLE_NAMEPLATES = true     -- calling card + rank badge + name floating over other players' cars
 local ENABLE_WEEKLY = true         -- one big weekly challenge
@@ -100,6 +103,7 @@ local XP = {
   raceWin = 3000, raceSecond = 1800, raceThird = 1000, raceFinish = 500, raceSolo = 300,
   duelWin = 2500, duelLose = 400, duelDraw = 1200,
   bounty = 600, draftPerSec = 3, copSpin = 800,
+  runBase = 800, runPerKm = 900, runClean = 0.5, runPerSecLeft = 12, convoyPerSec = 2.5,
 }
 local NEAR, PASS, MIN_SPEED, MIN_REL = 2.9, 5.0, 60, 12
 
@@ -119,6 +123,9 @@ local CHALLENGES = {
   { id = 'ot40', text = '40 overtakes', key = 'dayOver', goal = 40, xp = 6000 },
   { id = 'duel2', text = 'win 2 flash races', key = 'dayDuelWins', goal = 2, xp = 10000 },
   { id = 'duel5', text = 'win 5 flash races', key = 'dayDuelWins', goal = 5, xp = 25000 },
+  { id = 'runs2', text = 'complete 2 delivery runs', key = 'dayRuns', goal = 2, xp = 9000 },
+  { id = 'runs5', text = 'complete 5 delivery runs', key = 'dayRuns', goal = 5, xp = 24000 },
+  { id = 'convoy10', text = '10 km in a convoy', key = 'dayConvoy', goal = 10, xp = 8000 },
 }
 
 -- weekly challenge: one per week, rotates
@@ -141,6 +148,10 @@ local MILESTONES = {
   { id = 'nm30000', text = '30,000 near misses', key = 'nearMisses', goal = 30000, xp = 600000 },
   { id = 'dw25', text = '25 flash race wins', key = 'duelWins', goal = 25, xp = 40000 },
   { id = 'dw100', text = '100 flash race wins', key = 'duelWins', goal = 100, xp = 150000 },
+  { id = 'rn10', text = '10 delivery runs', key = 'runsDone', goal = 10, xp = 15000 },
+  { id = 'rn50', text = '50 delivery runs', key = 'runsDone', goal = 50, xp = 80000 },
+  { id = 'rn200', text = '200 delivery runs', key = 'runsDone', goal = 200, xp = 300000 },
+  { id = 'cv100', text = '100 km in convoys', key = 'convoyKm', goal = 100, xp = 30000 },
 }
 
 -- calling cards. kind: s = static, a = animated. unlock types: free, rank, km, nm (near misses),
@@ -216,6 +227,7 @@ local store = ac.storage {
   loginStreak = 0, lastLoginKey = '', dailyCount = 0, bestCombo = 0,
   weekKey = '', weekNear = 0, weekKm = 0, weekWins = 0, weeklyDone = false,
   prestige = 0, menuKey = '', frame = 0, adminKey = '',
+  spots = '', runsDone = 0, runsFailed = 0, runsXP = 0, dayRuns = 0, convoyKm = 0, dayConvoy = 0,
 }
 
 ------------------------------------------------------------------ zones (remote json, or placed in game)
@@ -548,6 +560,7 @@ local function dailyRefresh()
     store.dailyKey = key
     store.dailyDone = ''
     store.dayNear, store.dayKm, store.dayTop, store.dayStreak, store.dayRun, store.dayClean, store.dayOver, store.dayDuelWins = 0, 0, 0, 0, 0, 0, 0, 0
+    store.dayRuns, store.dayConvoy = 0, 0
   end
   if daily.key ~= key then
     daily.key = key
@@ -650,11 +663,12 @@ local function duelStart(opp)
   end)
 end
 
-local function duelFinish(mine, theirs)
-  -- 1 = I was in front, -1 = they were, 0 = level
-  local outcome = mine
-  if theirs ~= nil and theirs == mine and mine ~= 0 then outcome = 0 end      -- both think they won: call it level
-  if theirs ~= nil and theirs ~= 0 and mine == 0 then outcome = -theirs end
+local function duelFinish(myGap, theirGap)
+  -- each side measures the gap from where it sits. the other car's position always arrives a little late,
+  -- so one view alone favours whoever is looking. average the two and the lag cancels out
+  local g = myGap
+  if theirGap ~= nil then g = (myGap - theirGap) / 2 end
+  local outcome = g > 2 and 1 or (g < -2 and -1 or 0)
   local oppName = driverName(duel.opp)
   if outcome == 1 then
     store.duelWins = store.duelWins + 1
@@ -733,8 +747,8 @@ pcall(function()
       if duel.state == 'racing' and duel.opp == idx then duel.oppResult = data.value end
     elseif data.kind == 5 then                    -- they flipped
       if duel.state == 'racing' and duel.opp == idx and duel.result == nil then
-        duel.result = 1
-        duelFinish(1, -1)
+        duel.result = 50
+        duelFinish(50, -50)
       end
     end
   end)
@@ -762,7 +776,7 @@ local function carNearMe(me)
   local best, bestD = nil, 1e9
   for i = 1, sim.carsCount - 1 do
     local c = ac.getCar(i)
-    if c and c.isConnected then
+    if c and c.isConnected and not isTrafficCar(i, c) then
       local rel = c.position - me.position
       local lon, lat = rel:dot(me.look), math.abs(rel:dot(me.side))
       if lon > -8 and lon < 30 and lat < 8 and math.abs(rel.y) < 5 then
@@ -869,10 +883,10 @@ local function duelUpdate(dt, me)
       return
     end
     if duel.time >= RACE_SECONDS and duel.result == nil then
-      local mine = duel.ahead > 2 and 1 or (duel.ahead < -2 and -1 or 0)
+      local mine = math.max(-500, math.min(500, duel.ahead))
       duel.result = mine
       duelSendReliable(4, duel.opp, mine)
-      duel.timer = 3.0
+      duel.timer = 4.0
     elseif duel.result ~= nil then
       duel.timer = duel.timer - dt
       if duel.oppResult ~= nil or duel.timer <= 0 then duelFinish(duel.result, duel.oppResult) end
@@ -1095,6 +1109,30 @@ local function disposeUnit(u)
 end
 
 function nlChaseState() return chase.state end
+-- own-car teleport (CSP physics for online scripts). false when this server does not allow it
+tpGrace = -10
+function teleportMe(pos, look)
+  local ok = false
+  pcall(function()
+    if physics.allowed ~= nil and physics.allowed() == false then return end
+    physics.setCarPosition(0, vec3(pos.x, pos.y + 0.3, pos.z), vec3(look.x, 0, look.z):normalize())
+    ok = true
+  end)
+  if ok then tpGrace = t end
+  return ok
+end
+
+-- AI traffic slots are cars too. tell them apart from people
+function isTrafficCar(i, c)
+  if i == 0 then return false end
+  local ai = false
+  pcall(function() ai = c.isAIControlled == true end)
+  if ai then return true end
+  local n = ''
+  pcall(function() n = ac.getDriverName(i) or '' end)
+  return n:match('^[Tt]raffic') ~= nil or n:match('^AI ') ~= nil
+end
+
 local function chaseReset()
   for _, u in ipairs(chase.units) do disposeUnit(u) end
   chase = { state = 'idle', zone = nil, countdown = 0, time = 0, units = {}, trail = {}, trailTimer = 0, bustTimer = -1, farTimer = 0, lastSpawnT = 0, pinTimer = 0 }
@@ -1428,6 +1466,7 @@ local function chaseUpdate(dt, me)
   end)
   if chase.lastPos and flatDist(me.position, chase.lastPos) > 60 then jumped = true end
   chase.lastPos = vec3(me.position.x, me.position.y, me.position.z)
+  if t - tpGrace < 3 then jumped = false; chase.lastPos = nil end
   if jumped and chase.time > 1 then
     store.busts = store.busts + 1
     showBanner('BUSTED', 'back to the pits with them on you   ' .. XP.busted .. ' xp', rgbm(1, 0.3, 0.25, 1), 4)
@@ -1783,7 +1822,10 @@ local function update(dt)
     end
   end
 
+  frozenUpdate(dt)
   flipUpdate(dt, me)
+  runsUpdate(dt, me)
+  convoyUpdate(dt, me)
   chaseUpdate(dt, me)
   raceUpdate(dt, me)
   duelUpdate(dt, me)
@@ -1928,7 +1970,9 @@ end
 
 
 function script.draw3D()
-  if not started or not (ENABLE_POLICE or ENABLE_RACE_ZONES) then return end
+  if not started then return end
+  pcall(drawRunBeacon)
+  if not (ENABLE_POLICE or ENABLE_RACE_ZONES) then return end
   local me = ac.getCar(0)
   if not me then return end
   local function ring(cx, cy, cz, r, col, pulse)
@@ -2747,6 +2791,26 @@ function tabChallenges()
       text('DAY ' .. store.loginStreak, 12, vec2(p.x + 280, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
       text('+' .. fmt(math.min(5000, (store.loginStreak + 1) * 500)) .. ' XP TOMORROW', 8, vec2(p.x + 280, p.y + 30), DIM, F_BOLD)
     end
+    if ENABLE_RUNS then
+      section('delivery runs', BLUE, 'target')
+      local p = ui.getCursor()
+      ui.dummy(vec2(w, 64))
+      ui.drawRectFilled(p, p + vec2(w, 64), rgbm(0, 0, 0, 0.5), 12)
+      ui.drawRect(p, p + vec2(w, 64), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
+      text('A DROP-OFF SOMEWHERE YOU HAVE DRIVEN BEFORE, AND A CLOCK. FOLLOW THE ARROW.', 8, vec2(p.x + 16, p.y + 12), rgbm(1, 1, 1, 0.9), F_BOLD)
+      text(('OFFERS COME UP WHILE YOU CRUISE (' .. RUN_KEY .. ' TAKES THEM). CLEAN RUN = 1.5X. ' .. store.runsDone .. ' DONE, ' .. fmt(store.runsXP) .. ' XP EARNED'):upper(), 7, vec2(p.x + 16, p.y + 30), DIM, F_BOLD)
+      ui.setCursor(vec2(p.x + 16, p.y + 42))
+      local me0 = ac.getCar(0)
+      if runs.state == 'active' then
+        if nlButton('Abandon run', 120, RED, 18) then runsEnd(false, 'abandoned') end
+      elseif #(runs.spots or {}) < 12 then
+        text('DRIVE A FEW KM FIRST SO IT KNOWS THE ROADS', 7, ui.getCursor() + vec2(0, 4), DIM, F_BOLD)
+      elseif nlButton('Start a run now', 140, GOLD, 18, 'target') and me0 then
+        local tgt = runsPick(me0)
+        if tgt then runsStart(tgt, me0) menu.open = false else event('nowhere far enough from here yet. drive a bit more', DIM) end
+      end
+      ui.dummy(vec2(1, 14))
+    end
     section('milestones', BLUE, 'medal')
     for _, m in ipairs(MILESTONES) do goalRow(m.id, m.text, store[m.key] or 0, m.goal, m.xp, hasFlag(store.milestonesDone, m.id), w, 'medal') end
   end)
@@ -2831,6 +2895,13 @@ function tabStats()
     for _, c in ipairs(CARDS) do total = total + 1; if cardUnlocked(c) then n = n + 1 end end
     statTile(p.x + 292, p.y, 138, 'cards', n .. ' / ' .. total, 'cards')
     statTile(p.x + 438, p.y, 138, 'dailies done', store.dailyCount, 'calendar')
+    ui.dummy(vec2(1, 8))
+    p = ui.getCursor()
+    ui.dummy(vec2(576, 64))
+    statTile(p.x, p.y, 138, 'deliveries', store.runsDone .. ' / ' .. (store.runsDone + store.runsFailed), 'target', GOLD)
+    statTile(p.x + 146, p.y, 138, 'delivery xp', fmt(store.runsXP), 'xp', GOLD)
+    statTile(p.x + 292, p.y, 138, 'convoy km', fmt(store.convoyKm), 'players', GREEN)
+    statTile(p.x + 438, p.y, 138, 'prestige', store.prestige, 'star', GOLD)
     if ENABLE_PRESTIGE then
       section('prestige', BLUE, 'star')
       p = ui.getCursor()
@@ -3087,7 +3158,7 @@ end
 
 admin = { open = false, login = false, unlocked = false, tab = 1, tabX = 0, tabW = 0, say = '', time = 20, transition = 60, rain = 0, wet = 0, water = 0, grip = 1.0,
   checkT = 0, boostMin = 30, announce = '', restrict = 0, ballast = 0, giveXP = 5000, isAdmin = false, simAdmin = false, chatAdmin = false, sentAt = -1,
-  pw = '', serverPw = '', newPw = '', newHash = '', wrong = 0, lockT = 0, shake = 0, spectating = -1, log = {} }
+  pw = '', serverPw = '', newPw = '', newHash = '', wrong = 0, lockT = 0, shake = 0, spectating = -1, log = {}, warnText = 'Stop ramming people. This is your last warning.', frozen = {} }
 adminEvent = nil
 adminBoost = { until_ = -1, mult = 1 }
 
@@ -3155,8 +3226,32 @@ pcall(function()
     local who = sender.index == 0 and myTag() or driverName(sender.index)
     local forMe = data.target == nil or data.target < 0 or data.target == sessionOf(0)
     if data.kind == 1 then
-      showBanner('ANNOUNCEMENT', tostring(data.text or ''), GOLD, 8)
-      pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Admin: ' .. tostring(data.text or '')) end)
+      showNotice('announce', 'SERVER ANNOUNCEMENT', tostring(data.text or ''), who, 10)
+    elseif data.kind == 8 and forMe then
+      -- brought to an admin
+      local x, y, z, lx, lz = tostring(data.text or ''):match('^([-%d%.]+);([-%d%.]+);([-%d%.]+);([-%d%.]+);([-%d%.]+)$')
+      if x then
+        if chase.state ~= 'idle' then chaseReset() end
+        if teleportMe(vec3(tonumber(x), tonumber(y), tonumber(z)), vec3(tonumber(lx), 0, tonumber(lz))) then
+          showNotice('info', 'TELEPORTED', who .. ' brought you over', who, 5)
+        else
+          showNotice('warn', 'TELEPORT', who .. ' tried to bring you over but this server does not allow teleports', who, 6)
+        end
+      end
+    elseif data.kind == 9 and forMe then
+      if (data.value or 0) > 0 then
+        local me0 = ac.getCar(0)
+        frozen = { pos = vec3(me0.position.x, me0.position.y, me0.position.z), look = vec3(me0.look.x, 0, me0.look.z), by = who, t0 = t }
+        pcall(function() physics.setCarNoInput(true) end)
+        if chase.state ~= 'idle' then chaseReset() end
+        showNotice('warn', 'FROZEN', who .. ' froze your car. sit tight', who, 6)
+      else
+        frozen = nil
+        pcall(function() physics.setCarNoInput(false) end)
+        showNotice('info', 'UNFROZEN', 'you can drive again', who, 4)
+      end
+    elseif data.kind == 10 and forMe then
+      showNotice('warn', 'WARNING', tostring(data.text or ''), who, 12)
     elseif data.kind == 2 then
       adminBoost.until_ = t + (data.value or 30) * 60
       adminBoost.mult = 2
@@ -3188,13 +3283,320 @@ pcall(function()
   end)
 end)
 
--- kinds: 1 announce, 2 boost (value = minutes), 3 clear chases/races, 4 police on target, 5 xp to target, 6 private message to target
+-- kinds: 1 announce, 2 boost (value = minutes), 3 clear chases/races, 4 police on target, 5 xp to target, 6 private message to target,
+-- 8 bring target to me (text = x;y;z;lx;lz), 9 freeze target (value 1) / release (0), 10 warning on target's screen
 function adminSend(kind, value, textv, target)
   if not adminEvent then return end
   pcall(function() adminEvent({ kind = kind, target = target or -1, value = value or 0, text = (textv or ''):sub(1, 59) }, false) end)
 end
 
 function adminBoostActive() return adminBoost.until_ > t end
+
+------------------------------------------------------------------ delivery runs: somewhere to be, and a clock
+
+runs = { state = 'idle', target = nil, dist0 = 0, limit = 0, time = 0, hits = 0, cool = 45, offer = nil, offerT = -1, lastSpotPos = nil, spots = nil, saveN = 0, crashes0 = 0 }
+
+function runsLoadSpots()
+  runs.spots = {}
+  for x, y, z in tostring(store.spots or ''):gmatch('([-%d%.]+),([-%d%.]+),([-%d%.]+)') do
+    runs.spots[#runs.spots + 1] = vec3(tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0)
+  end
+end
+
+function runsSaveSpots()
+  local parts = {}
+  for i = math.max(1, #runs.spots - 299), #runs.spots do
+    local q = runs.spots[i]
+    parts[#parts + 1] = string.format('%.0f,%.0f,%.0f', q.x, q.y, q.z)
+  end
+  store.spots = table.concat(parts, ';')
+end
+
+-- a drop-off: a place you have been, 1.2 to 6 km away as the crow flies
+function runsPick(me)
+  local c = {}
+  for _, q in ipairs(runs.spots) do
+    local d = flatDist(me.position, q)
+    if d > 1200 and d < 6000 then c[#c + 1] = q end
+  end
+  if #c == 0 then return nil end
+  return c[math.random(#c)]
+end
+
+function runsStart(tgt, me)
+  if runs.state ~= 'idle' or not tgt then return end
+  runs.state = 'active'
+  runs.target = tgt
+  runs.offer = nil
+  runs.dist0 = flatDist(me.position, tgt)
+  runs.limit = runs.dist0 / 20 + 30            -- average 72 km/h gets you there with time to spare
+  runs.time = 0
+  runs.hits = 0
+  runs.crashes0 = store.crashes
+  showBanner('DELIVERY RUN', string.format('%.1f km to the drop. %d:%02d on the clock. keep it clean for 1.5x', runs.dist0 / 1000, math.floor(runs.limit / 60), math.floor(runs.limit % 60)), GOLD, 4)
+  hud.lastEvent = t
+end
+
+function runsEnd(ok, why)
+  if ok then
+    local xp = XP.runBase + XP.runPerKm * runs.dist0 / 1000 + math.max(0, runs.limit - runs.time) * XP.runPerSecLeft
+    xp = xp * (1 - 0.25 * runs.hits)
+    local clean = store.crashes == runs.crashes0
+    if clean then xp = xp * (1 + XP.runClean) end
+    xp = math.floor(xp)
+    store.runsDone = store.runsDone + 1
+    store.dayRuns = store.dayRuns + 1
+    store.runsXP = store.runsXP + xp
+    showBanner('DELIVERED', (clean and 'clean run, 1.5x   ' or '') .. '+' .. fmt(xp) .. ' xp', GOLD, 4)
+    addXP(xp, 'delivery run', GOLD, true)
+    runs.cool = 40
+  else
+    store.runsFailed = store.runsFailed + 1
+    showBanner('RUN FAILED', why or '', rgbm(0.7, 0.72, 0.78, 1), 3)
+    runs.cool = 30
+  end
+  runs.state = 'idle'
+  runs.target = nil
+  hud.lastEvent = t
+end
+
+function runsUpdate(dt, me)
+  if not ENABLE_RUNS then return end
+  if not runs.spots then runsLoadSpots() end
+  -- learn the roads: a spot every 150 m you drive
+  if not runs.lastSpotPos or flatDist(me.position, runs.lastSpotPos) > 150 then
+    runs.lastSpotPos = vec3(me.position.x, me.position.y, me.position.z)
+    if me.speedKmh > 20 then
+      runs.spots[#runs.spots + 1] = runs.lastSpotPos
+      if #runs.spots > 320 then table.remove(runs.spots, 1) end
+      runs.saveN = runs.saveN + 1
+      if runs.saveN % 5 == 0 then runsSaveSpots() end
+    end
+  end
+  local busy = chase.state ~= 'idle' or duel.state ~= 'idle' or race.state ~= 'idle' or frozen ~= nil
+  if runs.state == 'idle' then
+    runs.cool = runs.cool - dt
+    if runs.offer and t - runs.offerT > 30 then runs.offer = nil end
+    if runs.offer and busy then runs.offer = nil end
+    if runs.cool <= 0 and not busy and not runs.offer and me.speedKmh > 30 and #runs.spots >= 12 then
+      local tgt = runsPick(me)
+      if tgt then
+        runs.offer = tgt
+        runs.offerT = t
+        local km = flatDist(me.position, tgt) / 1000
+        showBanner('DELIVERY RUN', string.format('%.1f km away.  %s takes it', km, RUN_KEY:upper()), GOLD, 4)
+        hud.lastEvent = t
+        pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', string.format('Delivery run, %.1f km. Click to take it.', km), function() if runs.offer then runsStart(runs.offer, ac.getCar(0)) end end) end)
+        runs.cool = 90
+      else
+        runs.cool = 25
+      end
+    end
+    if runs.offer then
+      local take = false
+      pcall(function() take = ui.keyboardButtonPressed(ui.KeyIndex[RUN_KEY]) end)
+      if take then runsStart(runs.offer, me) end
+    end
+    return
+  end
+  -- on a run
+  runs.time = runs.time + dt
+  hud.lastEvent = t
+  if store.crashes ~= runs.crashes0 + runs.hits then
+    runs.hits = store.crashes - runs.crashes0
+    if runs.hits >= 3 then runsEnd(false, 'package destroyed') return end
+    event('PACKAGE DAMAGED   -25%', RED, true)
+  end
+  if busy and chase.state ~= 'idle' then runsEnd(false, 'the police got in the way') return end
+  local d = flatDist(me.position, runs.target)
+  if d < 25 and math.abs(me.position.y - runs.target.y) < 15 then runsEnd(true) return end
+  if runs.time > runs.limit then runsEnd(false, 'out of time') return end
+end
+
+function drawRunHUD()
+  if runs.state ~= 'active' or not runs.target then return end
+  local me = ac.getCar(0)
+  if not me then return end
+  local sim = ac.getSim()
+  local sw = sim.windowWidth
+  local s = store.hudScale or 1
+  local w, h = 250 * s, 64 * s
+  local x, y = (sw - w) / 2, (frozen and 60 or 16) * s
+  if notice then y = y + 40 * s end
+  local d = flatDist(me.position, runs.target)
+  local left = math.max(0, runs.limit - runs.time)
+  local urgent = left < 20
+  local col = urgent and RED or GOLD
+  ui.drawRectFilled(vec2(x, y), vec2(x + w, y + h), rgbm(0.03, 0.03, 0.04, 0.9), 10 * s)
+  ui.drawRectFilled(vec2(x, y), vec2(x + 4 * s, y + h), col, 10 * s)
+  text('DELIVERY' .. (runs.hits > 0 and ('   DAMAGED x' .. runs.hits) or ''), 8 * s, vec2(x + 16 * s, y + 9 * s), withA(col, 1), F_BOLD)
+  local dtxt = d >= 1000 and string.format('%.2f KM', d / 1000) or string.format('%d M', math.floor(d))
+  text(dtxt, 20 * s, vec2(x + 16 * s, y + 24 * s), rgbm(1, 1, 1, 1), F_BOLD)
+  local ttxt = string.format('%d:%02d', math.floor(left / 60), math.floor(left % 60))
+  text(ttxt, 20 * s, vec2(x + w - 16 * s - textW(ttxt, 20 * s, F_BOLD).x - 36 * s, y + 24 * s), urgent and withA(RED, 0.6 + 0.4 * math.sin(t * 8)) or rgbm(1, 1, 1, 1), F_BOLD)
+  -- arrow: which way is the drop, relative to where the car points
+  local rel = runs.target - me.position
+  local ang = math.atan2(rel:dot(me.side), rel:dot(me.look))
+  local cx, cy, r = x + w - 24 * s, y + h / 2, 11 * s
+  local function pt(a, rr) return vec2(cx + math.sin(a) * rr, cy - math.cos(a) * rr) end
+  ui.drawCircleFilled(vec2(cx, cy), 16 * s, rgbm(1, 1, 1, 0.06), 24)
+  pcall(function() ui.drawTriangleFilled(pt(ang, r), pt(ang + 2.5, r * 0.8), pt(ang - 2.5, r * 0.8), col) end)
+  -- progress
+  local k = 1 - math.min(1, d / math.max(1, runs.dist0))
+  ui.drawRectFilled(vec2(x + 4 * s, y + h - 3 * s), vec2(x + 4 * s + (w - 4 * s) * k, y + h), withA(col, 0.7), 2 * s)
+end
+
+function drawRunBeacon()
+  if runs.state ~= 'active' or not runs.target then return end
+  local q = runs.target
+  local pulse = 0.6 + 0.4 * math.sin(t * 3)
+  local col = GOLD
+  local segs, prevp = 40, nil
+  for i = 0, segs do
+    local a = i / segs * math.pi * 2
+    local pnt = vec3(q.x + math.cos(a) * 25, q.y + 0.2, q.z + math.sin(a) * 25)
+    if prevp then
+      render.debugLine(prevp, pnt, withA(col, 0.9 * pulse))
+      render.debugLine(prevp + vec3(0, 0.6, 0), pnt + vec3(0, 0.6, 0), withA(col, 0.35 * pulse))
+    end
+    if i % 8 == 0 then render.debugLine(pnt, pnt + vec3(0, 3, 0), withA(col, 0.5 * pulse)) end
+    prevp = pnt
+  end
+  for k = 0, 3 do
+    local off = vec3(math.cos(k * 1.57) * 1.2, 0, math.sin(k * 1.57) * 1.2)
+    render.debugLine(q + off, q + off + vec3(0, 60, 0), withA(col, 0.5 * pulse))
+  end
+  pcall(function() render.debugText(vec3(q.x, q.y + 4, q.z), 'DROP OFF', col, 1.6, render.FontAlign.Center) end)
+end
+
+------------------------------------------------------------------ convoy: roll with friends
+
+convoy = { timer = 0, n = 0, active = false, bank = 0, tick = 0, km = 0 }
+
+function convoyUpdate(dt, me)
+  if not ENABLE_CONVOY then return end
+  local sim = ac.getSim()
+  local n = 0
+  if me.speedKmh > 50 then
+    for i = 1, sim.carsCount - 1 do
+      local c = ac.getCar(i)
+      if c and c.isConnected and not isTrafficCar(i, c) and c.speedKmh > 40 and flatDist(me.position, c.position) < 45 then n = n + 1 end
+    end
+  end
+  if n == 0 then
+    if convoy.active then
+      if convoy.bank > 0 then addXP(convoy.bank, 'convoy', GREEN); convoy.bank = 0 end
+      event('convoy split', DIM)
+    end
+    convoy.timer, convoy.active, convoy.n, convoy.tick = 0, false, 0, 0
+    return
+  end
+  convoy.timer = convoy.timer + dt
+  if n ~= convoy.n and convoy.active then event('CONVOY x' .. (n + 1), GREEN, true) end
+  convoy.n = n
+  if not convoy.active and convoy.timer > 8 then
+    convoy.active = true
+    event('CONVOY x' .. (n + 1) .. '   xp for everyone in it', GREEN, true)
+  end
+  if convoy.active then
+    hud.lastEvent = t
+    local km = me.speedKmh / 3600 * dt
+    store.convoyKm = store.convoyKm + km
+    store.dayConvoy = store.dayConvoy + km
+    convoy.bank = convoy.bank + dt * XP.convoyPerSec * math.min(3, n)
+    convoy.tick = convoy.tick + dt
+    if convoy.tick > 5 then convoy.tick = 0; addXP(convoy.bank, 'CONVOY x' .. (n + 1), GREEN); convoy.bank = 0 end
+  end
+end
+
+notice = nil
+frozen = nil
+function showNotice(kind, title, body, who, life)
+  notice = { kind = kind, title = title, body = body or '', who = who or '', t0 = t, life = life or 8 }
+  hud.lastEvent = t
+  pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', title .. ': ' .. (body or '')) end)
+end
+
+-- word wrap for the notice body
+function wrapLines(txt, size, maxW, font)
+  local lines, cur = {}, ''
+  for word in tostring(txt):gmatch('%S+') do
+    local try = cur == '' and word or (cur .. ' ' .. word)
+    if textW(try, size, font).x > maxW and cur ~= '' then
+      lines[#lines + 1] = cur
+      cur = word
+    else
+      cur = try
+    end
+  end
+  if cur ~= '' then lines[#lines + 1] = cur end
+  return lines
+end
+
+function drawNotice()
+  local sim = ac.getSim()
+  local sw, sh = sim.windowWidth, sim.windowHeight
+  local s = store.hudScale or 1
+  if frozen then
+    local w, h = 230 * s, 34 * s
+    local x, y = (sw - w) / 2, 16 * s
+    local pulse = 0.75 + 0.25 * math.sin(t * 4)
+    ui.drawRectFilled(vec2(x, y), vec2(x + w, y + h), rgbm(0.03, 0.03, 0.04, 0.9), 8 * s)
+    ui.drawRect(vec2(x, y), vec2(x + w, y + h), withA(RED, pulse), 8 * s, ui.CornerFlags.All, 1.5)
+    local lbl = 'FROZEN BY ' .. tostring(frozen.by):upper()
+    text(lbl, 11 * s, vec2(x + (w - textW(lbl, 11 * s, F_BOLD).x) / 2, y + 10 * s), withA(RED, pulse), F_BOLD)
+  end
+  if not notice then return end
+  local age = t - notice.t0
+  if age > notice.life then notice = nil return end
+  local fin = math.min(1, age / 0.35)
+  local fout = math.min(1, (notice.life - age) / 0.5)
+  local a = math.min(fin, fout)
+  local slide = 1 - (1 - fin) ^ 3
+  local warn = notice.kind == 'warn'
+  local col = warn and RED or (notice.kind == 'info' and BLUE or GOLD)
+  if warn then
+    local pulse = 0.5 + 0.5 * math.sin(t * 6)
+    ui.drawRectFilled(vec2(0, 0), vec2(sw, sh), withA(RED, 0.10 * a * pulse))
+    ui.drawRect(vec2(2, 2), vec2(sw - 2, sh - 2), withA(RED, 0.8 * a * pulse), 0, ui.CornerFlags.All, 4)
+  end
+  local w = math.min(sw - 80, 680 * s)
+  local bodySize = 16 * s
+  local lines = wrapLines(notice.body, bodySize, w - 60 * s, F_BOLD)
+  local h = (62 + #lines * 22) * s
+  local x = (sw - w) / 2
+  local y = -h + slide * (h + (frozen and 62 or 56) * s)
+  ui.drawRectFilled(vec2(x + 2, y + 8), vec2(x + w + 2, y + h + 8), rgbm(0, 0, 0, 0.45 * a), 12 * s)
+  ui.drawRectFilled(vec2(x, y), vec2(x + w, y + h), rgbm(0.03, 0.03, 0.04, 0.95 * a), 12 * s)
+  ui.drawRectFilled(vec2(x, y), vec2(x + 5 * s, y + h), withA(col, a), 12 * s)
+  ui.drawRect(vec2(x, y), vec2(x + w, y + h), withA(col, 0.5 * a), 12 * s, ui.CornerFlags.All, 1)
+  icon(warn and 'warning' or 'info', vec2(x + 20 * s, y + 16 * s), 14 * s, withA(col, a))
+  text(notice.title:upper(), 10 * s, vec2(x + 42 * s, y + 16 * s), withA(col, a), F_BOLD)
+  for i, ln in ipairs(lines) do
+    text(ln, bodySize, vec2(x + 20 * s, y + (36 + (i - 1) * 22) * s), rgbm(1, 1, 1, a), F_BOLD)
+  end
+  if notice.who ~= '' then
+    local by = ('- ' .. notice.who):upper()
+    text(by, 8 * s, vec2(x + w - 20 * s - textW(by, 8 * s, F_BOLD).x, y + h - 20 * s), withA(DIM, a), F_BOLD)
+  end
+  -- life bar
+  local k = 1 - age / notice.life
+  ui.drawRectFilled(vec2(x + 5 * s, y + h - 3 * s), vec2(x + 5 * s + (w - 5 * s) * k, y + h), withA(col, 0.6 * a), 2 * s)
+end
+
+function frozenUpdate(dt)
+  if not frozen then return end
+  local me0 = ac.getCar(0)
+  if not me0 then return end
+  if flatDist(me0.position, frozen.pos) > 0.6 or math.abs(me0.position.y - frozen.pos.y) > 1.5 then
+    if t - (frozen.lastTp or -10) > 0.25 then
+      frozen.lastTp = t
+      if not teleportMe(frozen.pos, frozen.look) then
+        pcall(function() physics.setCarNoInput(true) end)
+      end
+    end
+  end
+end
 
 function adminLinked() return admin.simAdmin == true or admin.chatAdmin == true end
 
@@ -3246,13 +3648,24 @@ function adminTabPlayers()
       text('SPECTATING ' .. driverName(admin.spectating):upper(), 8, ui.getCursor() + vec2(0, 9), DIM, F_BOLD)
       ui.dummy(vec2(1, 30))
     end
-    section('players on the server', RED, 'players')
-    local rows = {}
+    section('warning text   (Warn on a player puts this on their screen, big and red)', RED, 'warning')
+    local wp = ui.getCursor()
+    pill(wp, 560, 32, false, 0)
+    ui.setCursor(vec2(wp.x + 12, wp.y + 5))
+    ui.setNextItemWidth(536)
+    pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+    admin.warnText = ui.inputText('##warntext', admin.warnText)
+    pcall(function() ui.popStyleColor() end)
+    ui.setCursor(vec2(wp.x, wp.y + 40))
+    local rows, traffic = {}, 0
     local sim = ac.getSim()
     for i = 0, (sim.carsCount or 1) - 1 do
       local c = ac.getCar(i)
-      if c and c.isConnected then rows[#rows + 1] = { i = i, c = c } end
+      if c and c.isConnected then
+        if isTrafficCar(i, c) then traffic = traffic + 1 else rows[#rows + 1] = { i = i, c = c } end
+      end
     end
+    section('players on the server   (' .. #rows .. (traffic > 0 and ('   +' .. traffic .. ' traffic hidden') or '') .. ')', RED, 'players')
     for _, r in ipairs(rows) do
       local ok, err = pcall(adminPlayerRow, r.i, r.c)
       if not ok then text('row failed: ' .. tostring(err):sub(1, 80), 8, ui.getCursor(), RED); ui.dummy(vec2(1, 14)) end
@@ -3275,7 +3688,7 @@ end
 function adminPlayerRow(i, c)
   local o = others[i]
   local p = ui.getCursor()
-  local h = 84
+  local h = (i == 0) and 66 or 106
   ui.dummy(vec2(580, h))
   ui.drawRectFilled(p, p + vec2(580, h), rgbm(1, 1, 1, i == 0 and 0.03 or 0.05), 8)
   ui.drawRect(p, p + vec2(580, h), rgbm(0.016, 0.012, 0.024, 0.72), 8, ui.CornerFlags.All, 1)
@@ -3316,8 +3729,34 @@ function adminPlayerRow(i, c)
     if admin.say ~= '' then adminSend(6, 0, admin.say, sid); adminLog('msg -> ' .. tostring(name)) else adminLog('type the message in the Server tab first') end
   end
   if i ~= 0 then
-    -- row 2: server commands (need the server link)
+    -- row 2: teleports, freeze, warning (script-side, no server link needed)
     ui.setCursor(vec2(p.x + 46, p.y + 62))
+    if nlButton('Go to##' .. i, 64, GOLD, 20, 'target') then
+      local ok = teleportMe(c.position - c.look * 8, c.look)
+      adminLog(ok and ('went to ' .. tostring(name)) or 'teleport not allowed on this server')
+      if not ok then showNotice('warn', 'TELEPORT', 'CSP does not allow teleports on this server', '', 5) end
+    end
+    ui.sameLine(0, 4)
+    if nlButton('Bring##' .. i, 64, GOLD, 20, 'car') then
+      local me0 = ac.getCar(0)
+      local pos = me0.position - me0.look * 7
+      adminSend(8, 0, string.format('%.1f;%.1f;%.1f;%.3f;%.3f', pos.x, pos.y, pos.z, me0.look.x, me0.look.z), sid)
+      adminLog('bring -> ' .. tostring(name))
+    end
+    ui.sameLine(0, 4)
+    local isFrozen = admin.frozen[sid] == true
+    if nlButton((isFrozen and 'Unfreeze##' or 'Freeze##') .. i, 76, isFrozen and GREEN or nil, 20, 'lock') then
+      admin.frozen[sid] = not isFrozen
+      adminSend(9, isFrozen and 0 or 1, '', sid)
+      adminLog((isFrozen and 'unfroze ' or 'froze ') .. tostring(name))
+    end
+    ui.sameLine(0, 4)
+    if nlButton('Warn##' .. i, 62, RED, 20, 'warning') then
+      adminSend(10, 0, admin.warnText, sid)
+      adminLog('warning -> ' .. tostring(name))
+    end
+    -- row 3: server commands (need the server link)
+    ui.setCursor(vec2(p.x + 46, p.y + 84))
     local ok = adminLinked()
     if nlButton('Pit##' .. i, 50, nil, 18) then cmd('/pit ' .. sid) end
     ui.sameLine(0, 4)
@@ -3334,7 +3773,7 @@ function adminPlayerRow(i, c)
     if nlButton('Restrict##' .. i, 66, nil, 18) then cmd('/restrict ' .. sid .. ' ' .. math.floor(admin.restrict)) end
     ui.sameLine(0, 4)
     if nlButton('Ballast##' .. i, 62, nil, 18) then cmd('/ballast ' .. sid .. ' ' .. math.floor(admin.ballast)) end
-    if not ok then text('SERVER', 6, vec2(p.x + 536, p.y + 68), RED, F_BOLD) end
+    if not ok then text('SERVER', 6, vec2(p.x + 536, p.y + 90), RED, F_BOLD) end
   end
   ui.setCursor(vec2(p.x, p.y + h + 6))
 end
@@ -3390,7 +3829,7 @@ function adminTabServer()
     pcall(function() ui.popStyleColor() end)
     ui.setCursor(vec2(p.x + 450, p.y))
     if nlButton('Send', 100, GOLD, 32, 'message') and admin.say ~= '' then cmd('/say ' .. admin.say); admin.say = '' end
-    section('announcement on every screen (big gold banner, works without the server link)', RED, 'warning')
+    section('server announcement   (drops in at the top of every screen, works without the server link)', RED, 'warning')
     local q = ui.getCursor()
     pill(q, 440, 32, false, 0)
     ui.setCursor(vec2(q.x + 12, q.y + 5))
@@ -3573,6 +4012,8 @@ function script.drawUI(dt)
   if not started then return end
   local ok, err = pcall(baseDrawUI, dt)
   if not ok and drawErr ~= tostring(err) then drawErr = tostring(err); dlog('draw error: ' .. drawErr) end
+  pcall(drawNotice)
+  pcall(drawRunHUD)
   if menuKeyPressed() then openMenu() end
   if menu.open then
     local okm, errm = pcall(drawPanel, 'main', 'No License Ranks', 'cards  -  challenges  -  leaderboard', 644, 780, BLUE, drawMenu, function() menu.open = false end, 'cards', MENU_KEY)
