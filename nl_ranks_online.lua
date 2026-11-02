@@ -5,12 +5,15 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.3'
+local VERSION = '4.4'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
 -- Where the rank badges live (rank_01.png .. rank_27.png).
 local ICON_BASE = 'https://raw.githubusercontent.com/YbwSolo/NL/main/icons/'
+
+-- UI icon sheet
+local ICON_ATLAS = 'https://raw.githubusercontent.com/YbwSolo/NL/main/icons/ui_atlas.png'
 
 -- Where the calling cards live (s_*.png, a_*.png, f_*.png).
 local CARD_BASE = 'https://raw.githubusercontent.com/YbwSolo/NL/main/cards/'
@@ -1783,9 +1786,9 @@ end
 function mix(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
 
 -- small dark tile with a grey label and a white value
-local hudAnim = { pop = {}, last = {} }
+hudAnim = { pop = {}, last = {} }
 -- value pop: when a tile's text changes it briefly scales up
-local function popFor(id, value)
+function popFor(id, value)
   if hudAnim.last[id] ~= value then hudAnim.last[id] = value; hudAnim.pop[id] = 1 end
   local p = hudAnim.pop[id] or 0
   hudAnim.pop[id] = math.max(0, p - 0.08)
@@ -2090,12 +2093,21 @@ function addLocalZone(kind, me)
   dlog('placed ' .. kind .. ' zone ' .. name)
 end
 
-local menuUI = { nameEdit = nil, tab = 1, tabX = 0, tabW = 0 }
-local DIM = rgbm(0.5, 0.5, 0.55, 1)
-local PANEL = rgbm(0.07, 0.075, 0.09, 1)
+------------------------------------------------------------------ UI kit (glass panels, pill tabs, icon atlas)
 
--- tiny animation helper: values ease towards a target every frame, so hovers and tabs feel alive
-local anim = {}
+menuUI = { nameEdit = nil, tab = 1, search = '' }
+DIM = rgbm(0.56, 0.58, 0.64, 1)
+BLUE = rgbm(0, 0.47, 1, 1)
+BORDER = rgbm(0.44, 0.44, 0.44, 1)
+GLASS = rgbm(0.02, 0.02, 0.03, 0.78)
+CARD = rgbm(0.06, 0.06, 0.075, 0.9)
+anim = {}
+ICONS = {
+cards = {0, 0}, challenges = {1, 0}, leaderboard = {2, 0}, stats = {3, 0}, settings = {4, 0}, paint = {5, 0}, interior = {6, 0}, plate = {7, 0}, glow = {0, 1}, looks = {1, 1}, tune = {2, 1}, showroom = {3, 1}, save = {4, 1}, players = {5, 1}, weather = {6, 1}, server = {7, 1}, time = {0, 2}, police = {1, 2}, race = {2, 2}, lock = {3, 2}, check = {4, 2}, close = {5, 2}, star = {6, 2}, fire = {7, 2}, skull = {0, 3}, admin = {1, 3}, emote = {2, 3}, search = {3, 3}, chevron = {4, 3}, crown = {5, 3}, bolt = {6, 3}, rain = {7, 3}, snow = {0, 4}, sun = {1, 4}, moon = {2, 4}, ban = {3, 4}, kick = {4, 4}, pit = {5, 4}, warning = {6, 4}, key = {7, 4}, speed = {0, 5}, combo = {1, 5}, proximity = {2, 5}, medal = {3, 5}, wind = {4, 5}, car = {5, 5}, calendar = {6, 5}, gift = {7, 5}, copy = {0, 6}, paste = {1, 6}, reset = {2, 6}, wheel = {3, 6}, brake = {4, 6}, drop = {5, 6}, message = {6, 6}, eye = {7, 6}, eyeoff = {0, 7}, up = {1, 7}, info = {2, 7}, grip = {3, 7}, session = {4, 7}, xp = {5, 7}, target = {6, 7}, home = {7, 7}
+}
+ICON_COLS, ICON_ROWS = 8, 8
+
+
 function ease(id, target, speed)
   local dt = 0.016
   pcall(function() dt = math.min(0.1, ac.getSim().dt or 0.016) end)
@@ -2108,66 +2120,204 @@ end
 
 function lerpC(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
 
-function nlButton(label, w, accent, h)
-  h = h or 28
+-- icon from the atlas
+function icon(name, p, size, col)
+  local c = ICONS[name]
+  if not c then return end
+  local u1 = vec2(c[1] / ICON_COLS, c[2] / ICON_ROWS)
+  local u2 = vec2((c[1] + 1) / ICON_COLS, (c[2] + 1) / ICON_ROWS)
+  pcall(function() ui.drawImage(ICON_ATLAS, p, p + vec2(size, size), col or rgbm(1, 1, 1, 1), u1, u2) end)
+end
+
+-- horizontal gradient fill (left colour -> right colour), falls back to flat
+function hgrad(p1, p2, cl, cr, r)
+  local ok = pcall(function() ui.drawRectFilledMultiColor(p1, p2, cl, cr, cr, cl) end)
+  if not ok then ui.drawRectFilled(p1, p2, lerpC(cl, cr, 0.5), r or 0) end
+end
+
+-- glass box with the 1px dark border, as in the design
+function glass(p1, p2, r, a)
+  a = a or 1
+  ui.drawRectFilled(p1 + vec2(1, 4), p2 + vec2(1, 4), rgbm(0, 0, 0, 0.2 * a), r)
+  ui.drawRectFilled(p1, p2, withA(GLASS, a), r)
+  ui.drawRect(p1, p2, rgbm(0.016, 0.012, 0.024, 0.72 * a), r, ui.CornerFlags.All, 1)
+end
+
+-- the blue pill (active) or dark pill (inactive), used for tabs and buttons
+function pill(p, w, h, active, f, a)
+  a = a or 1
+  if active then
+    ui.drawRectFilled(p, p + vec2(w, h), withA(BLUE, 0.21 * a), 12)
+    hgrad(p, p + vec2(w, h), withA(BLUE, (0.85 + 0.15 * f) * a), withA(BLUE, 0.21 * a), 12)
+    ui.drawRect(p, p + vec2(w, h), withA(BLUE, a), 12, ui.CornerFlags.All, 1)
+  else
+    ui.drawRectFilled(p, p + vec2(w, h), rgbm(0, 0, 0, (0.5 + 0.2 * f) * a), 12)
+    ui.drawRect(p, p + vec2(w, h), lerpC(rgbm(0.016, 0.012, 0.024, 0.72), rgbm(0.5, 0.5, 0.52, 0.9), f), 12, ui.CornerFlags.All, 1)
+  end
+end
+
+-- button. accent = any colour means "primary" (blue pill); nil = dark pill. optional icon name
+function nlButton(label, w, accent, h, ic)
+  h = h or 32
   local p = ui.getCursor()
   ui.invisibleButton('##b' .. label, vec2(w, h))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
   local f = ease('b' .. label, hov and 1 or 0)
-  if accent then
-    ui.drawRectFilled(p, p + vec2(w, h), withA(accent, 0.8 + 0.2 * f), 5)
-    ui.drawRectFilled(vec2(p.x, p.y + h - 2), vec2(p.x + w, p.y + h), rgbm(0, 0, 0, 0.25), 1)
+  local shown = label:gsub('##.*$', '')
+  if accent and accent ~= BLUE and accent ~= GOLD and accent ~= GREEN then
+    -- custom colour pill (red for danger etc)
+    ui.drawRectFilled(p, p + vec2(w, h), withA(accent, 0.18 + 0.1 * f), 12)
+    ui.drawRect(p, p + vec2(w, h), withA(accent, 0.9), 12, ui.CornerFlags.All, 1)
   else
-    ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.07 + 0.1 * f), 5)
-    ui.drawRect(p, p + vec2(w, h), rgbm(1, 1, 1, 0.08 + 0.3 * f), 5, ui.CornerFlags.All, 1)
+    pill(p, w, h, accent ~= nil, f)
   end
-  local tw = textW(label, 11, F_BOLD)
-  text(label, 11, vec2(p.x + (w - tw.x) / 2, p.y + (h - 13) / 2), accent and rgbm(0.04, 0.04, 0.05, 1) or rgbm(1, 1, 1, 0.85 + 0.15 * f), F_BOLD)
+  local tw = textW(shown:upper(), 12, F_BOLD)
+  local iw = ic and 18 or 0
+  local x = p.x + (w - tw.x - iw) / 2
+  if ic then icon(ic, vec2(x, p.y + (h - 14) / 2), 14, rgbm(1, 1, 1, 0.9)) end
+  text(shown:upper(), 12, vec2(x + iw, p.y + (h - 14) / 2), rgbm(1, 1, 1, 0.85 + 0.15 * f), F_BOLD)
   return clicked
 end
 
--- section label with a little accent line
-function section(label, col)
+function nlToggle(label, on, w)
   local p = ui.getCursor()
-  ui.dummy(vec2(10, 18))
-  ui.drawRectFilled(vec2(p.x, p.y + 4), vec2(p.x + 3, p.y + 14), col or GOLD, 1)
-  text(label:upper(), 9, vec2(p.x + 9, p.y + 3), rgbm(0.75, 0.77, 0.82, 1), F_BOLD)
+  w = w or 260
+  ui.invisibleButton('##t' .. label, vec2(w, 32))
+  local hov = ui.itemHovered()
+  local clicked = ui.itemClicked(ui.MouseButton.Left)
+  local f = ease('tg' .. label, on and 1 or 0)
+  local hf = ease('tgh' .. label, hov and 1 or 0)
+  pill(p, w, 32, false, hf)
+  ui.drawRectFilled(vec2(p.x + 10, p.y + 9), vec2(p.x + 38, p.y + 23), lerpC(rgbm(1, 1, 1, 0.12), BLUE, f), 7)
+  ui.drawCircleFilled(vec2(p.x + 17 + 14 * f, p.y + 16), 5.5, rgbm(1, 1, 1, 0.95), 12)
+  text(label:upper(), 11, vec2(p.x + 48, p.y + 9), rgbm(1, 1, 1, 0.85 + 0.15 * hf), F_BOLD)
+  return clicked
 end
 
--- custom tab bar: flat labels, sliding underline
+function section(label, col, ic)
+  local p = ui.getCursor()
+  ui.dummy(vec2(10, 22))
+  if ic then icon(ic, vec2(p.x, p.y + 2), 13, col or BLUE) end
+  text(label:upper(), 10, vec2(p.x + (ic and 19 or 0), p.y + 3), rgbm(0.82, 0.84, 0.88, 1), F_BOLD)
+  local tw = textW(label:upper(), 10, F_BOLD).x
+  ui.drawRectFilled(vec2(p.x + (ic and 19 or 0) + tw + 10, p.y + 10), vec2(p.x + 560, p.y + 11), rgbm(1, 1, 1, 0.08))
+end
+
+TAB_ICONS = { cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
+  paint = 'paint', interior = 'interior', plate = 'plate', glow = 'glow', looks = 'looks', tune = 'tune', showroom = 'showroom', save = 'save',
+  players = 'players', ['time & weather'] = 'weather', server = 'server' }
+
+-- pill tabs with icons
 function nlTabs(id, labels, state, w)
   local p = ui.getCursor()
-  local h = 30
-  ui.dummy(vec2(w, h + 6))
-  ui.drawRectFilled(vec2(p.x, p.y + h), vec2(p.x + w, p.y + h + 1), rgbm(1, 1, 1, 0.08))
+  local h = 32
+  ui.dummy(vec2(w, h + 10))
   local x = p.x
-  local selX, selW = p.x, 40
   for i, label in ipairs(labels) do
-    local tw = textW(label, 11, F_BOLD).x
-    local bw = tw + 26
+    local ic = TAB_ICONS[label:lower()]
+    local tw = textW(label:upper(), 11, F_BOLD).x
+    local bw = tw + 30 + (ic and 18 or 0)
     ui.setCursor(vec2(x, p.y))
     ui.invisibleButton('##tab' .. id .. i, vec2(bw, h))
     local hov = ui.itemHovered()
     if ui.itemClicked(ui.MouseButton.Left) then state.tab = i end
     local sel = state.tab == i
-    local f = ease('tab' .. id .. i, (sel and 1 or (hov and 0.5 or 0)))
-    text(label, 11, vec2(x + 13, p.y + 9), lerpC(rgbm(0.6, 0.62, 0.68, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
-    if sel then selX, selW = x + 8, bw - 16 end
-    x = x + bw
+    local f = ease('tab' .. id .. i, hov and 1 or 0)
+    pill(vec2(x, p.y), bw, h, sel, f)
+    local tx = x + 15
+    if ic then icon(ic, vec2(tx, p.y + 9), 14, rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f)); tx = tx + 18 end
+    text(label:upper(), 11, vec2(tx, p.y + 9), rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f), F_BOLD)
+    x = x + bw + 8
   end
-  state.tabX = ease('tabx' .. id, selX, 18)
-  state.tabW = ease('tabw' .. id, selW, 18)
-  ui.drawRectFilled(vec2(state.tabX, p.y + h - 2), vec2(state.tabX + state.tabW, p.y + h + 1), GOLD, 1)
-  ui.setCursor(vec2(p.x, p.y + h + 8))
+  ui.setCursor(vec2(p.x, p.y + h + 12))
 end
 
--- a dark row card
-function rowBox(w, h, hovId)
+function bar(frac, w, colr, id, h)
+  h = h or 6
   local p = ui.getCursor()
-  local f = hovId and ease(hovId, ui.itemHovered() and 1 or 0) or 0
-  ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.05 + 0.04 * f), 6)
-  return p
+  ui.dummy(vec2(w, h + 2))
+  frac = math.max(0, math.min(1, frac))
+  if id then frac = ease('bar' .. id, frac, 6) end
+  ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.08), h / 2)
+  if frac > 0 then hgrad(p, p + vec2(math.max(h, w * frac), h), withA(colr or BLUE, 1), withA(colr or BLUE, 0.45), h / 2) end
+end
+
+-- search box in the design style
+function searchBox(id, value, w)
+  local p = ui.getCursor()
+  pill(p, w, 32, false, 0)
+  icon('search', vec2(p.x + 12, p.y + 9), 14, rgbm(1, 1, 1, 0.5))
+  ui.setCursor(vec2(p.x + 34, p.y + 5))
+  ui.setNextItemWidth(w - 44)
+  local v = value
+  pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+  v = ui.inputText('##' .. id, value)
+  pcall(function() ui.popStyleColor() end)
+  if value == '' and v == '' then text('SEARCH', 11, vec2(p.x + 34, p.y + 9), rgbm(1, 1, 1, 0.3), F_BOLD) end
+  ui.setCursor(vec2(p.x, p.y + 40))
+  return v
+end
+
+-- panel frame: 20px radius glass, 2px grey border, 64px header with its own bottom border
+function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
+  local sim = ac.getSim()
+  local f = ease('panel' .. id, 1, 10)
+  local sc = 0.97 + 0.03 * f
+  local pw, ph = w * sc, h * sc
+  local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
+  ui.transparentWindow('nl_' .. id, vec2(px - 24, py - 24), vec2(pw + 48, ph + 48), true, true, function()
+    local o = vec2(24, 24)
+    ui.drawRectFilled(o + vec2(2, 8), o + vec2(pw + 2, ph + 8), rgbm(0, 0, 0, 0.35 * f), 20)
+    ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.016, 0.012, 0.024, 0.86 * f), 20)
+    -- header
+    hgrad(o, o + vec2(pw, 64), rgbm(0, 0, 0, 0.5 * f), rgbm(0.035, 0.035, 0.035, 0.16 * f), 20)
+    ui.drawRectFilled(o + vec2(0, 62), o + vec2(pw, 64), withA(BORDER, 0.9 * f))
+    ui.drawRect(o + vec2(1, 1), o + vec2(pw - 1, ph - 1), withA(BORDER, 0.9 * f), 20, ui.CornerFlags.All, 2)
+    if ic then
+      ui.drawRectFilled(o + vec2(18, 16), o + vec2(50, 48), withA(accent, 0.25 * f), 8)
+      icon(ic, o + vec2(24, 22), 20, withA(accent, f))
+    end
+    text(title:upper(), 15, o + vec2(ic and 60 or 20, 17), rgbm(1, 1, 1, f), F_BOLD)
+    if subtitle then text(subtitle:upper(), 8, o + vec2(ic and 60 or 20, 38), withA(DIM, f), F_BOLD) end
+    -- key hint pill + close
+    local kx = o.x + pw - 112
+    if keyName then
+      local kw = textW(keyName:upper(), 10, F_BOLD).x + 22
+      kx = o.x + pw - 60 - kw
+      pill(vec2(kx, o.y + 16), kw, 32, false, 0)
+      text(keyName:upper(), 10, vec2(kx + 11, o.y + 26), rgbm(1, 1, 1, 0.75), F_BOLD)
+    end
+    ui.setCursor(o + vec2(pw - 50, 16))
+    ui.invisibleButton('##close' .. id, vec2(32, 32))
+    local hov = ui.itemHovered()
+    local hf = ease('close' .. id, hov and 1 or 0)
+    pill(o + vec2(pw - 50, 16), 32, 32, false, hf)
+    icon('close', o + vec2(pw - 41, 25), 14, rgbm(1, 1, 1, 0.7 + 0.3 * hf))
+    if ui.itemClicked(ui.MouseButton.Left) then onClose() end
+    ui.setCursor(o + vec2(22, 80))
+    fn()
+  end)
+end
+
+-- style ImGui sliders / inputs to match
+function pushKitStyle()
+  pcall(function()
+    ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0.5))
+    ui.pushStyleColor(ui.StyleColor.FrameBgHovered, rgbm(0, 0, 0, 0.65))
+    ui.pushStyleColor(ui.StyleColor.FrameBgActive, rgbm(0, 0, 0, 0.7))
+    ui.pushStyleColor(ui.StyleColor.SliderGrab, BLUE)
+    ui.pushStyleColor(ui.StyleColor.SliderGrabActive, withA(BLUE, 0.8))
+    ui.pushStyleColor(ui.StyleColor.Header, withA(BLUE, 0.3))
+    ui.pushStyleColor(ui.StyleColor.HeaderHovered, withA(BLUE, 0.45))
+    ui.pushStyleColor(ui.StyleColor.Button, rgbm(0, 0, 0, 0.5))
+    ui.pushStyleColor(ui.StyleColor.ButtonHovered, withA(BLUE, 0.5))
+    ui.pushStyleVar(ui.StyleVar.FrameRounding, 10)
+    ui.pushStyleVar(ui.StyleVar.GrabRounding, 10)
+  end)
+end
+function popKitStyle()
+  pcall(function() ui.popStyleColor(9); ui.popStyleVar(2) end)
 end
 
 function isTopRun()
@@ -2176,46 +2326,55 @@ function isTopRun()
   return true
 end
 
--- one card tile. returns true when clicked
-function cardTile(i, c, w, h, showName)
-  local p0 = ui.getCursor()
-  ui.invisibleButton('##card' .. i, vec2(w, h + (showName and 16 or 0)))
+-- calling card as a product card: picture, label, name, CHOOSE / EQUIPPED / LOCKED pill
+function cardTile(i, c, w)
+  local h = 118
+  local p = ui.getCursor()
+  ui.invisibleButton('##card' .. i, vec2(w, h))
   local hovered = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
   local unlocked = cardUnlocked(c)
   local selected = store.card == c.id
   local f = ease('card' .. i, hovered and 1 or 0)
-  local grow = 3 * f
-  local p = vec2(p0.x - grow, p0.y - grow)
-  local q = vec2(p0.x + w + grow, p0.y + h + grow)
-  if f > 0.01 then ui.drawRectFilled(vec2(p.x - 2, p.y + 4), vec2(q.x + 2, q.y + 6), rgbm(0, 0, 0, 0.35 * f), 6) end
-  drawCardImage(c, p, q, unlocked and rgbm(1, 1, 1, 1) or rgbm(0.22, 0.22, 0.25, 1))
-  if not unlocked then
-    local lt = cardLockText(c)
-    local lw = textW(lt, 9, F_BOLD).x
-    ui.drawRectFilled(vec2(p.x, q.y - 16), q, rgbm(0, 0, 0, 0.55), 3)
-    text(lt, 9, vec2(p.x + (w - lw) / 2 + grow, q.y - 14), rgbm(0.92, 0.92, 0.95, 1), F_BOLD)
-    local pr = cardProgress(c)
-    ui.drawRectFilled(vec2(p.x + 8, q.y - 3), vec2(q.x - 8, q.y - 1), rgbm(1, 1, 1, 0.15), 1)
-    ui.drawRectFilled(vec2(p.x + 8, q.y - 3), vec2(p.x + 8 + (w + 2 * grow - 16) * pr, q.y - 1), GOLD, 1)
-    local lk = 'LOCKED'
-    text(lk, 7, vec2(p.x + 6, p.y + 5), rgbm(0.8, 0.8, 0.85, 0.9), F_BOLD)
-  end
-  local border = selected and GOLD or lerpC(rgbm(1, 1, 1, 0.12), rgbm(1, 1, 1, 0.9), f)
-  ui.drawRect(p, q, border, 4, ui.CornerFlags.All, selected and 2 or 1)
-  if c.kind == 'a' then
-    ui.drawRectFilled(vec2(q.x - 36, p.y + 4), vec2(q.x - 4, p.y + 15), rgbm(0, 0, 0, 0.65), 3)
-    text('ANIM', 7, vec2(q.x - 32, p.y + 6), rgbm(1, 1, 1, 0.95), F_BOLD)
-  end
+  -- card body
   if selected then
-    ui.drawRectFilled(vec2(p.x + 4, p.y + 4), vec2(p.x + 58, p.y + 15), GOLD, 3)
-    text('EQUIPPED', 7, vec2(p.x + 8, p.y + 6), rgbm(0.05, 0.05, 0.05, 1), F_BOLD)
-  elseif hasFlag(store.newCards, c.id) then
-    ui.drawRectFilled(vec2(p.x + 4, p.y + 4), vec2(p.x + 32, p.y + 15), GREEN, 3)
-    text('NEW', 7, vec2(p.x + 8, p.y + 6), rgbm(0.05, 0.05, 0.05, 1), F_BOLD)
+    hgrad(p, p + vec2(w, h), withA(BLUE, 0.55), withA(BLUE, 0.12), 12)
+    ui.drawRect(p, p + vec2(w, h), BLUE, 12, ui.CornerFlags.All, 1)
+  else
+    ui.drawRectFilled(p, p + vec2(w, h), rgbm(0, 0, 0, 0.5 + 0.15 * f), 12)
+    ui.drawRect(p, p + vec2(w, h), lerpC(rgbm(0.016, 0.012, 0.024, 0.72), rgbm(0.5, 0.5, 0.52, 0.9), f), 12, ui.CornerFlags.All, 1)
   end
-  if showName then
-    text(c.name, 9, vec2(p0.x + 2, p0.y + h + 4), selected and GOLD or lerpC(rgbm(0.7, 0.72, 0.78, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
+  -- picture
+  local ix, iy, iw, ih = p.x + 8, p.y + 8, w - 16, (w - 16) / 4
+  drawCardImage(c, vec2(ix, iy), vec2(ix + iw, iy + ih), unlocked and rgbm(1, 1, 1, 1) or rgbm(0.25, 0.25, 0.28, 1))
+  ui.drawRect(vec2(ix, iy), vec2(ix + iw, iy + ih), rgbm(1, 1, 1, 0.08), 6, ui.CornerFlags.All, 1)
+  if not unlocked then icon('lock', vec2(ix + iw / 2 - 8, iy + ih / 2 - 8), 16, rgbm(1, 1, 1, 0.8)) end
+  if c.kind == 'a' then
+    ui.drawRectFilled(vec2(ix + iw - 38, iy + 4), vec2(ix + iw - 4, iy + 16), rgbm(0, 0, 0, 0.7), 4)
+    text('ANIM', 7, vec2(ix + iw - 33, iy + 6), rgbm(1, 1, 1, 0.9), F_BOLD)
+  end
+  if hasFlag(store.newCards, c.id) and not selected then
+    ui.drawRectFilled(vec2(ix + 4, iy + 4), vec2(ix + 34, iy + 16), BLUE, 4)
+    text('NEW', 7, vec2(ix + 9, iy + 6), rgbm(1, 1, 1, 1), F_BOLD)
+  end
+  -- label + name
+  text(c.kind == 'a' and 'ANIMATED CARD' or 'CALLING CARD', 7, vec2(p.x + 10, iy + ih + 8), withA(DIM, 1), F_BOLD)
+  text(c.name, 11, vec2(p.x + 10, iy + ih + 19), rgbm(1, 1, 1, 1), F_BOLD)
+  -- pill at the bottom
+  local by = p.y + h - 30
+  local label, prim = 'CHOOSE', false
+  if selected then label, prim = 'EQUIPPED', true
+  elseif not unlocked then label = cardLockText(c) end
+  if not unlocked then
+    local pr = cardProgress(c)
+    ui.drawRectFilled(vec2(p.x + 10, by), vec2(p.x + w - 10, by + 22), rgbm(0, 0, 0, 0.55), 11)
+    if pr > 0 then hgrad(vec2(p.x + 10, by), vec2(p.x + 10 + (w - 20) * pr, by + 22), withA(BLUE, 0.6), withA(BLUE, 0.25), 11) end
+    local lw = textW(label:upper(), 8, F_BOLD).x
+    text(label:upper(), 8, vec2(p.x + w / 2 - lw / 2, by + 6), rgbm(1, 1, 1, 0.9), F_BOLD)
+  else
+    pill(vec2(p.x + 10, by), w - 20, 22, prim, f)
+    local lw = textW(label, 9, F_BOLD).x
+    text(label, 9, vec2(p.x + w / 2 - lw / 2, by + 5), rgbm(1, 1, 1, 1), F_BOLD)
   end
   if hovered and not unlocked then ui.setTooltip('Locked: ' .. cardLockText(c)) end
   return clicked and unlocked
@@ -2224,168 +2383,186 @@ end
 function tabCards()
   local n, un = 0, 0
   for _, c in ipairs(CARDS) do n = n + 1; if cardUnlocked(c) then un = un + 1 end end
-  section(un .. ' of ' .. n .. ' cards unlocked   -   click a card to equip it')
-  ui.childWindow('##cards', vec2(580, 330), false, 0, function()
-    ui.dummy(vec2(1, 4))
+  local p = ui.getCursor()
+  menuUI.search = searchBox('cardsearch', menuUI.search, 240)
+  ui.setCursor(vec2(p.x + 256, p.y + 9))
+  text(un .. ' / ' .. n .. ' UNLOCKED', 10, ui.getCursor(), DIM, F_BOLD)
+  ui.setCursor(vec2(p.x + 256 + 110, p.y))
+  if nlButton('Animated only', 150, menuUI.animOnly and BLUE or nil, 32, 'star') then menuUI.animOnly = not menuUI.animOnly end
+  ui.setCursor(vec2(p.x, p.y + 44))
+  local q = menuUI.search:lower()
+  ui.childWindow('##cards', vec2(600, 400), false, 0, function()
     local col = 0
     for i, c in ipairs(CARDS) do
-      if col == 0 then ui.offsetCursorX(6) end
-      if cardTile(i, c, 176, 44, true) then selectCard(c) end
-      col = col + 1
-      if col < 3 then ui.sameLine(0, 10) else col = 0; ui.dummy(vec2(1, 6)) end
+      if (q == '' or c.name:lower():find(q, 1, true)) and (not menuUI.animOnly or c.kind == 'a') then
+        if cardTile(i, c, 186) then selectCard(c) end
+        col = col + 1
+        if col < 3 then ui.sameLine(0, 10) else col = 0; ui.dummy(vec2(1, 10)) end
+      end
     end
   end)
 end
 
-function bar(frac, w, colr, id)
+-- challenge / milestone row in the list style: icon, title, progress, reward pill
+function goalRow(id, title, value, goal, xp, done, w, ic)
   local p = ui.getCursor()
-  ui.dummy(vec2(w, 8))
-  frac = math.max(0, math.min(1, frac))
-  if id then frac = ease('bar' .. id, frac, 6) end
-  ui.drawRectFilled(p, p + vec2(w, 5), rgbm(1, 1, 1, 0.1), 2.5)
-  if frac > 0 then ui.drawRectFilled(p, p + vec2(math.max(5, w * frac), 5), colr or GOLD, 2.5) end
-end
-
--- challenge / milestone row: text on the left, reward on the right, bar underneath
-function goalRow(id, title, value, goal, xp, done, w)
-  local p0 = ui.getCursor()
-  ui.invisibleButton('##goal' .. id, vec2(w, 44))
+  ui.invisibleButton('##goal' .. id, vec2(w, 52))
   local hov = ui.itemHovered()
   local f = ease('goalh' .. id, hov and 1 or 0)
-  local lift = 2 * f
-  local p = vec2(p0.x, p0.y - lift)
-  if f > 0.01 then ui.drawRectFilled(vec2(p.x + 2, p.y + 4), vec2(p.x + w - 2, p.y + 46), rgbm(0, 0, 0, 0.35 * f), 6) end
-  ui.drawRectFilled(p, p + vec2(w, 44), done and withA(GREEN, 0.08 + 0.05 * f) or rgbm(1, 1, 1, 0.045 + 0.05 * f), 6)
-  ui.drawRect(p, p + vec2(w, 44), done and withA(GREEN, 0.3 + 0.4 * f) or rgbm(1, 1, 1, 0.05 + 0.25 * f), 6, ui.CornerFlags.All, 1)
-  ui.drawRectFilled(p, vec2(p.x + 3, p.y + 44), done and GREEN or withA(GOLD, 0.4 + 0.6 * f), 1)
-  text(title, 11, vec2(p.x + 14, p.y + 8), done and GREEN or lerpC(rgbm(0.92, 0.92, 0.95, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
-  local r = (done and 'DONE  ' or '') .. '+' .. fmt(xp) .. ' XP'
-  local rw = textW(r, 10, F_BOLD).x
-  local pulse = done and 0 or (0.5 + 0.5 * math.sin(t * 3)) * f
-  text(r, 10 + 1 * pulse, vec2(p.x + w - rw - 14 - 3 * pulse, p.y + 8 - 0.5 * pulse), done and GREEN or GOLD, F_BOLD)
-  if not done then
-    local frac = math.min(1, value / goal)
-    local pv = fmt(math.min(value, goal)) .. ' / ' .. fmt(goal) .. '   ' .. math.floor(frac * 100) .. '%'
-    local pw = textW(pv, 8, F_BOLD).x
-    text(pv, 8, vec2(p.x + w - pw - 14, p.y + 27), lerpC(DIM, rgbm(1, 1, 1, 1), f), F_BOLD)
-    local fe = ease('goal' .. id, frac, 6)
-    local bx2 = p.x + w - pw - 26
-    ui.drawRectFilled(vec2(p.x + 14, p.y + 31), vec2(bx2, p.y + 35), rgbm(1, 1, 1, 0.1), 2)
-    if fe > 0 then
-      local ex = p.x + 14 + math.max(4, (bx2 - p.x - 14) * fe)
-      ui.drawRectFilled(vec2(p.x + 14, p.y + 31), vec2(ex, p.y + 35), GOLD, 2)
-      ui.drawCircleFilled(vec2(ex, p.y + 33), 3 + 2 * f, withA(GOLD, 0.6), 10)
-    end
+  if done then
+    hgrad(p, p + vec2(w, 52), withA(BLUE, 0.35 + 0.1 * f), withA(BLUE, 0.06), 12)
+    ui.drawRect(p, p + vec2(w, 52), withA(BLUE, 0.8), 12, ui.CornerFlags.All, 1)
   else
-    text('completed', 8, vec2(p.x + 14, p.y + 27), withA(GREEN, 0.7), F_BOLD)
+    ui.drawRectFilled(p, p + vec2(w, 52), rgbm(0, 0, 0, 0.5 + 0.15 * f), 12)
+    ui.drawRect(p, p + vec2(w, 52), lerpC(rgbm(0.016, 0.012, 0.024, 0.72), rgbm(0.5, 0.5, 0.52, 0.9), f), 12, ui.CornerFlags.All, 1)
   end
-  ui.dummy(vec2(1, 2))
+  ui.drawRectFilled(vec2(p.x + 10, p.y + 10), vec2(p.x + 42, p.y + 42), done and withA(BLUE, 0.35) or rgbm(1, 1, 1, 0.06), 8)
+  icon(done and 'check' or (ic or 'target'), vec2(p.x + 18, p.y + 18), 16, done and rgbm(1, 1, 1, 1) or withA(BLUE, 1))
+  text(title, 12, vec2(p.x + 52, p.y + 9), rgbm(1, 1, 1, 1), F_BOLD)
+  local frac = math.min(1, value / goal)
+  if done then
+    text('COMPLETED', 8, vec2(p.x + 52, p.y + 30), withA(BLUE, 1), F_BOLD)
+  else
+    local fe = ease('goal' .. id, frac, 6)
+    local bw = w - 52 - 150
+    ui.drawRectFilled(vec2(p.x + 52, p.y + 33), vec2(p.x + 52 + bw, p.y + 38), rgbm(1, 1, 1, 0.08), 2.5)
+    if fe > 0 then hgrad(vec2(p.x + 52, p.y + 33), vec2(p.x + 52 + math.max(5, bw * fe), p.y + 38), BLUE, withA(BLUE, 0.4), 2.5) end
+    local pv = fmt(math.min(value, goal)) .. ' / ' .. fmt(goal)
+    text(pv, 8, vec2(p.x + 52 + bw + 8, p.y + 31), DIM, F_BOLD)
+  end
+  -- reward pill
+  local r = '+' .. fmt(xp) .. ' XP'
+  local rw = textW(r, 10, F_BOLD).x + 24
+  pill(vec2(p.x + w - rw - 10, p.y + 12), rw, 28, done, f)
+  text(r, 10, vec2(p.x + w - rw + 2, p.y + 20), done and rgbm(1, 1, 1, 1) or GOLD, F_BOLD)
+  ui.dummy(vec2(1, 4))
 end
 
 function tabChallenges()
-  ui.childWindow('##chal', vec2(580, 330), false, 0, function()
-    local w = 560
+  ui.childWindow('##chal', vec2(600, 440), false, 0, function()
+    local w = 576
     if ENABLE_DAILY then
-      section('today', GOLD)
-      for _, c in ipairs(daily.list) do goalRow(c.id, c.text, dailyProgress(c), c.goal, c.xp, hasFlag(store.dailyDone, c.id), w) end
-      text(store.dailyCount .. ' daily challenges completed in total', 9, ui.getCursor() + vec2(2, 0), DIM)
+      section('today', BLUE, 'calendar')
+      for _, c in ipairs(daily.list) do goalRow(c.id, c.text, dailyProgress(c), c.goal, c.xp, hasFlag(store.dailyDone, c.id), w, 'target') end
+      text((store.dailyCount .. ' DAILY CHALLENGES COMPLETED IN TOTAL'), 8, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
       ui.dummy(vec2(1, 14))
     end
     if ENABLE_WEEKLY and weekly.item then
-      section('this week', GOLD)
+      section('this week', BLUE, 'gift')
       local c = weekly.item
-      goalRow('week', c.text, store[c.key] or 0, c.goal, c.xp, store.weeklyDone, w)
+      goalRow('week', c.text, store[c.key] or 0, c.goal, c.xp, store.weeklyDone, w, 'gift')
     end
     if ENABLE_LOGIN_STREAK then
-      section('login streak', GOLD)
+      section('login streak', BLUE, 'bolt')
       local p = ui.getCursor()
-      ui.dummy(vec2(w, 34))
-      ui.drawRectFilled(p, p + vec2(w, 34), rgbm(1, 1, 1, 0.045), 6)
+      ui.dummy(vec2(w, 52))
+      ui.drawRectFilled(p, p + vec2(w, 52), rgbm(0, 0, 0, 0.5), 12)
+      ui.drawRect(p, p + vec2(w, 52), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
       for d = 1, 7 do
         local on = d <= ((store.loginStreak - 1) % 7) + 1
-        ui.drawCircleFilled(vec2(p.x + 20 + (d - 1) * 26, p.y + 17), 8, on and GOLD or rgbm(1, 1, 1, 0.1), 16)
-        text(tostring(d), 8, vec2(p.x + 17 + (d - 1) * 26, p.y + 12), on and rgbm(0.05, 0.05, 0.05, 1) or DIM, F_BOLD)
+        local cx, cy = p.x + 28 + (d - 1) * 34, p.y + 26
+        if on then ui.drawCircleFilled(vec2(cx, cy), 11, BLUE, 20) else ui.drawCircle(vec2(cx, cy), 11, rgbm(1, 1, 1, 0.15), 20, 1) end
+        text(tostring(d), 9, vec2(cx - 3, cy - 6), on and rgbm(1, 1, 1, 1) or DIM, F_BOLD)
       end
-      text('day ' .. store.loginStreak .. '   +' .. fmt(math.min(1000, (store.loginStreak + 1) * 100)) .. ' xp tomorrow', 10, vec2(p.x + 210, p.y + 11), rgbm(0.9, 0.9, 0.92, 1), F_BOLD)
+      text('DAY ' .. store.loginStreak, 12, vec2(p.x + 280, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
+      text('+' .. fmt(math.min(1000, (store.loginStreak + 1) * 100)) .. ' XP TOMORROW', 8, vec2(p.x + 280, p.y + 30), DIM, F_BOLD)
     end
-    section('milestones', GOLD)
-    for _, m in ipairs(MILESTONES) do goalRow(m.id, m.text, store[m.key] or 0, m.goal, m.xp, hasFlag(store.milestonesDone, m.id), w) end
+    section('milestones', BLUE, 'medal')
+    for _, m in ipairs(MILESTONES) do goalRow(m.id, m.text, store[m.key] or 0, m.goal, m.xp, hasFlag(store.milestonesDone, m.id), w, 'medal') end
   end)
 end
 
 function tabLeaderboard()
-  local rows = { { name = myTag(), rank = rankIndex, xp = store.xp, best = sessionBest, me = true, top = sessionTop, prestige = store.prestige } }
+  local rows = { { name = myTag(), rank = rankIndex, xp = store.xp, best = sessionBest, me = true, top = sessionTop, prestige = store.prestige, wanted = wantedIndex == 0 } }
   for idx, o in pairs(others) do
     local c = ac.getCar(idx)
     if c and c.isConnected then rows[#rows + 1] = { name = o.tag or driverName(idx), rank = o.rank, xp = o.xp or 0, best = o.best or 0, top = o.top or 0, prestige = o.prestige or 0, wanted = idx == wantedIndex } end
   end
-  rows[1].wanted = wantedIndex == 0
-  local function list(title, key, unit, col)
-    section(title, col)
-    table.sort(rows, function(a, b) return a[key] > b[key] end)
-    local maxv = math.max(1, rows[1][key])
-    for i, r in ipairs(rows) do
-      local p = ui.getCursor()
-      ui.dummy(vec2(560, 30))
-      ui.drawRectFilled(p, p + vec2(560, 30), r.me and withA(GOLD, 0.08) or rgbm(1, 1, 1, i % 2 == 0 and 0.03 or 0.05), 5)
-      text(tostring(i), 11, vec2(p.x + 10, p.y + 8), i == 1 and GOLD or DIM, F_BOLD)
-      ui.drawImage(RANKS[r.rank].icon, vec2(p.x + 30, p.y + 4), vec2(p.x + 52, p.y + 26), rgbm(1, 1, 1, 1))
-      text(r.name .. (r.prestige > 0 and ('  ' .. string.rep('*', math.min(5, r.prestige))) or ''), 11, vec2(p.x + 60, p.y + 8), r.me and GOLD or rgbm(1, 1, 1, 1), F_BOLD)
-      if r.wanted then
-        ui.drawRectFilled(vec2(p.x + 200, p.y + 9), vec2(p.x + 248, p.y + 21), RED, 2)
-        text('WANTED', 7, vec2(p.x + 205, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
-      end
-      text(RANKS[r.rank].name:upper(), 8, vec2(p.x + 260, p.y + 10), RANKS[r.rank].col, F_BOLD)
-      local v = key == 'xp' and (fmt(r.xp) .. ' xp') or (key == 'best' and (fmt(r.best) .. ' pts') or (math.floor(r.top) .. ' km/h'))
-      local vw = textW(v, 11, F_BOLD).x
-      text(v, 11, vec2(p.x + 548 - vw, p.y + 8), rgbm(1, 1, 1, 1), F_BOLD)
-      local f = r[key] / maxv
-      ui.drawRectFilled(vec2(p.x + 360, p.y + 25), vec2(p.x + 360 + 180 * f, p.y + 27), withA(col or GOLD, 0.7), 1)
-      ui.dummy(vec2(1, 2))
-    end
+  menuUI.lbTab = menuUI.lbTab or 1
+  local keys = { 'best', 'top', 'xp' }
+  local p = ui.getCursor()
+  for i, lbl in ipairs({ 'Best runs', 'Top speed', 'Ranks' }) do
+    if nlButton(lbl, 130, menuUI.lbTab == i and BLUE or nil, 32) then menuUI.lbTab = i end
+    if i < 3 then ui.sameLine(0, 8) end
   end
-  ui.childWindow('##lb', vec2(580, 330), false, 0, function()
-    list('best runs tonight', 'best', 'pts', GOLD)
-    list('fastest tonight', 'top', 'km/h', GREEN)
-    list('ranks on the server', 'xp', 'xp', rgbm(0.35, 0.72, 1.0, 1))
+  ui.dummy(vec2(1, 8))
+  local key = keys[menuUI.lbTab]
+  table.sort(rows, function(a, b) return a[key] > b[key] end)
+  local maxv = math.max(1, rows[1][key])
+  ui.childWindow('##lb', vec2(600, 390), false, 0, function()
+    for i, r in ipairs(rows) do
+      local q = ui.getCursor()
+      ui.invisibleButton('##lbr' .. i, vec2(576, 46))
+      local f = ease('lbr' .. i, ui.itemHovered() and 1 or 0)
+      if r.me then hgrad(q, q + vec2(576, 46), withA(BLUE, 0.4), withA(BLUE, 0.08), 12); ui.drawRect(q, q + vec2(576, 46), withA(BLUE, 0.8), 12, ui.CornerFlags.All, 1)
+      else ui.drawRectFilled(q, q + vec2(576, 46), rgbm(0, 0, 0, 0.5 + 0.15 * f), 12); ui.drawRect(q, q + vec2(576, 46), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1) end
+      -- position
+      if i <= 3 then ui.drawCircleFilled(vec2(q.x + 24, q.y + 23), 12, i == 1 and GOLD or (i == 2 and rgbm(0.75, 0.77, 0.82, 1) or rgbm(0.72, 0.45, 0.2, 1)), 20) end
+      text(tostring(i), 11, vec2(q.x + (i >= 10 and 18 or 21), q.y + 16), i <= 3 and rgbm(0.05, 0.05, 0.05, 1) or DIM, F_BOLD)
+      ui.drawImage(RANKS[r.rank].icon, vec2(q.x + 44, q.y + 7), vec2(q.x + 76, q.y + 39), rgbm(1, 1, 1, 1))
+      text(r.name .. (r.prestige > 0 and ('  ' .. string.rep('*', math.min(5, r.prestige))) or ''), 12, vec2(q.x + 86, q.y + 8), rgbm(1, 1, 1, 1), F_BOLD)
+      text(RANKS[r.rank].name:upper(), 8, vec2(q.x + 86, q.y + 28), RANKS[r.rank].col, F_BOLD)
+      if r.wanted then
+        ui.drawRectFilled(vec2(q.x + 250, q.y + 15), vec2(q.x + 306, q.y + 31), RED, 8)
+        text('WANTED', 8, vec2(q.x + 258, q.y + 19), rgbm(1, 1, 1, 1), F_BOLD)
+      end
+      local v = key == 'xp' and (fmt(r.xp) .. ' XP') or (key == 'best' and (fmt(r.best) .. ' PTS') or (math.floor(r.top) .. ' KM/H'))
+      local vw = textW(v, 12, F_BOLD).x
+      text(v, 12, vec2(q.x + 562 - vw, q.y + 9), rgbm(1, 1, 1, 1), F_BOLD)
+      local fr = r[key] / maxv
+      ui.drawRectFilled(vec2(q.x + 380, q.y + 32), vec2(q.x + 562, q.y + 35), rgbm(1, 1, 1, 0.08), 1.5)
+      hgrad(vec2(q.x + 380, q.y + 32), vec2(q.x + 380 + 182 * fr, q.y + 35), BLUE, withA(BLUE, 0.4), 1.5)
+      ui.dummy(vec2(1, 4))
+    end
   end)
 end
 
+function statTile(x, y, w, label, value, ic, col)
+  ui.drawRectFilled(vec2(x, y), vec2(x + w, y + 64), rgbm(0, 0, 0, 0.5), 12)
+  ui.drawRect(vec2(x, y), vec2(x + w, y + 64), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
+  ui.drawRectFilled(vec2(x + 10, y + 16), vec2(x + 42, y + 48), withA(col or BLUE, 0.2), 8)
+  icon(ic, vec2(x + 18, y + 24), 16, col or BLUE)
+  text(tostring(value), 15, vec2(x + 52, y + 13), rgbm(1, 1, 1, 1), F_BOLD)
+  text(label:upper(), 7, vec2(x + 52, y + 36), DIM, F_BOLD)
+end
+
 function tabStats()
-  local function stat(label, value, x, y, col)
-    text(tostring(value), 16, vec2(x, y), col or rgbm(1, 1, 1, 1), F_BOLD)
-    text(label:upper(), 8, vec2(x, y + 20), DIM, F_BOLD)
-  end
-  ui.childWindow('##stats', vec2(580, 330), false, 0, function()
-    section('driving', GOLD)
+  ui.childWindow('##stats', vec2(600, 440), false, 0, function()
+    section('driving', BLUE, 'car')
     local p = ui.getCursor()
-    ui.dummy(vec2(560, 50))
-    ui.drawRectFilled(p, p + vec2(560, 50), rgbm(1, 1, 1, 0.045), 6)
-    stat('km driven', fmt(store.km), p.x + 14, p.y + 8)
-    stat('near misses', fmt(store.nearMisses), p.x + 124, p.y + 8, GREEN)
-    stat('overtakes', fmt(store.overtakes), p.x + 234, p.y + 8)
-    stat('contacts', fmt(store.crashes), p.x + 344, p.y + 8, RED)
-    stat('top speed', math.floor(store.topSpeed) .. ' km/h', p.x + 444, p.y + 8)
-    section('bests', GOLD)
+    ui.dummy(vec2(576, 64))
+    statTile(p.x, p.y, 138, 'km driven', fmt(store.km), 'car')
+    statTile(p.x + 146, p.y, 138, 'near misses', fmt(store.nearMisses), 'proximity', GREEN)
+    statTile(p.x + 292, p.y, 138, 'overtakes', fmt(store.overtakes), 'chevron')
+    statTile(p.x + 438, p.y, 138, 'contacts', fmt(store.crashes), 'warning', RED)
+    ui.dummy(vec2(1, 8))
     p = ui.getCursor()
-    ui.dummy(vec2(560, 50))
-    ui.drawRectFilled(p, p + vec2(560, 50), rgbm(1, 1, 1, 0.045), 6)
-    stat('best run', fmt(store.bestRun), p.x + 14, p.y + 8, GOLD)
-    stat('best combo', 'x' .. store.bestStreak, p.x + 124, p.y + 8)
-    stat('flash races', store.duels, p.x + 234, p.y + 8)
-    stat('race wins', store.duelWins, p.x + 344, p.y + 8, GOLD)
-    stat('escapes', store.escapes .. ' / ' .. store.busts .. ' busts', p.x + 444, p.y + 8)
+    ui.dummy(vec2(576, 64))
+    statTile(p.x, p.y, 138, 'top speed', math.floor(store.topSpeed) .. ' km/h', 'speed')
+    statTile(p.x + 146, p.y, 138, 'best run', fmt(store.bestRun), 'medal', GOLD)
+    statTile(p.x + 292, p.y, 138, 'best combo', 'x' .. store.bestStreak, 'combo')
+    statTile(p.x + 438, p.y, 138, 'race wins', store.duelWins .. ' / ' .. store.duels, 'race', GOLD)
+    ui.dummy(vec2(1, 8))
+    p = ui.getCursor()
+    ui.dummy(vec2(576, 64))
+    statTile(p.x, p.y, 138, 'escapes', store.escapes, 'police')
+    statTile(p.x + 146, p.y, 138, 'busted', store.busts, 'skull', RED)
+    local n, total = 0, 0
+    for _, c in ipairs(CARDS) do total = total + 1; if cardUnlocked(c) then n = n + 1 end end
+    statTile(p.x + 292, p.y, 138, 'cards', n .. ' / ' .. total, 'cards')
+    statTile(p.x + 438, p.y, 138, 'dailies done', store.dailyCount, 'calendar')
     if ENABLE_PRESTIGE then
-      section('prestige', GOLD)
+      section('prestige', BLUE, 'star')
       p = ui.getCursor()
-      ui.dummy(vec2(560, 54))
-      ui.drawRectFilled(p, p + vec2(560, 54), withA(GOLD, 0.06), 6)
-      if store.prestige > 0 then text(string.rep('*', math.min(10, store.prestige)) .. '  prestige ' .. store.prestige .. '   +' .. (store.prestige * 5) .. '% xp on everything', 11, vec2(p.x + 14, p.y + 8), GOLD, F_BOLD)
-      else text('No stars yet', 11, vec2(p.x + 14, p.y + 8), rgbm(1, 1, 1, 1), F_BOLD) end
+      ui.dummy(vec2(576, 64))
+      hgrad(p, p + vec2(576, 64), withA(GOLD, 0.25), withA(GOLD, 0.04), 12)
+      ui.drawRect(p, p + vec2(576, 64), withA(GOLD, 0.6), 12, ui.CornerFlags.All, 1)
+      if store.prestige > 0 then text(string.rep('*', math.min(10, store.prestige)) .. '  PRESTIGE ' .. store.prestige .. '   +' .. (store.prestige * 5) .. '% XP ON EVERYTHING', 12, vec2(p.x + 14, p.y + 12), GOLD, F_BOLD)
+      else text('NO STARS YET', 12, vec2(p.x + 14, p.y + 12), rgbm(1, 1, 1, 1), F_BOLD) end
       if rankIndex >= #RANKS then
-        text('You are NO LICENSE. Prestige = back to Rookie, a star on your card, +5% xp for good. Cards stay.', 9, vec2(p.x + 14, p.y + 30), DIM)
-        ui.setCursor(vec2(p.x + 420, p.y + 13))
-        if nlButton('PRESTIGE NOW', 126, GOLD) then
+        text('Back to Rookie, a star on your card, +5% xp for good. Cards stay.', 9, vec2(p.x + 14, p.y + 36), DIM)
+        ui.setCursor(vec2(p.x + 420, p.y + 16))
+        if nlButton('Prestige now', 140, GOLD, 32, 'star') then
           store.prestige = store.prestige + 1
           store.xp = 0
           rankIndex = 1
@@ -2393,12 +2570,12 @@ function tabStats()
           broadcastRank()
           backendSave()
         end
-        ui.setCursor(vec2(p.x, p.y + 56))
+        ui.setCursor(vec2(p.x, p.y + 68))
       else
-        text('Reach NO LICENSE (rank 27) to prestige.', 9, vec2(p.x + 14, p.y + 30), DIM)
+        text('Reach NO LICENSE (rank 27) to prestige.', 9, vec2(p.x + 14, p.y + 36), DIM)
       end
     end
-    section('how xp works', GOLD)
+    section('how xp works', BLUE, 'info')
     for _, line in ipairs({
       'Near misses are the main earner. Closer = more. Chain them for a combo, go faster for a speed multiplier.',
       'A crash costs 100 xp plus 30% of the run you were on. You never lose a rank you have reached.',
@@ -2406,84 +2583,77 @@ function tabStats()
       'Hold the best run of the night and you are WANTED: 1.5x xp, but everyone gets a bounty for near missing you.',
       'Crash ' .. HEAT_CRASHES .. ' times in ' .. HEAT_WINDOW .. ' s and the police come. Lose them for big xp, get pinned and lose some.',
       'XP boost ' .. XP_BOOST.mult .. 'x between ' .. XP_BOOST.hours[1] .. ':00 and ' .. (XP_BOOST.hours[#XP_BOOST.hours] + 1) .. ':00.',
-    }) do text(line, 9, ui.getCursor() + vec2(4, 0), DIM); ui.dummy(vec2(1, 14)) end
+    }) do text(line, 9, ui.getCursor() + vec2(4, 0), DIM); ui.dummy(vec2(1, 15)) end
   end)
 end
 
-local FRAMES = { { 'Rank colour', nil }, { 'Gold', GOLD }, { 'White', rgbm(1, 1, 1, 1) }, { 'Green', GREEN }, { 'Red', RED }, { 'Purple', rgbm(0.75, 0.35, 1, 1) }, { 'Ice', rgbm(0.6, 0.85, 1, 1) } }
+FRAMES = { { 'Rank colour', nil }, { 'Blue', BLUE }, { 'Gold', GOLD }, { 'White', rgbm(1, 1, 1, 1) }, { 'Green', GREEN }, { 'Red', RED }, { 'Purple', rgbm(0.75, 0.35, 1, 1) }, { 'Ice', rgbm(0.6, 0.85, 1, 1) } }
 function frameColour(i, R)
   local f = FRAMES[(i or 0) + 1]
   return (f and f[2]) or R.col
 end
 
-function nlToggle(label, on, w)
-  local p = ui.getCursor()
-  w = w or 260
-  ui.invisibleButton('##t' .. label, vec2(w, 26))
-  local hov = ui.itemHovered()
-  local clicked = ui.itemClicked(ui.MouseButton.Left)
-  local f = ease('tg' .. label, on and 1 or 0)
-  local hf = ease('tgh' .. label, hov and 1 or 0)
-  ui.drawRectFilled(p, p + vec2(w, 26), rgbm(1, 1, 1, 0.05 + 0.05 * hf), 5)
-  ui.drawRectFilled(vec2(p.x + 8, p.y + 7), vec2(p.x + 34, p.y + 19), lerpC(rgbm(1, 1, 1, 0.15), GREEN, f), 6)
-  ui.drawCircleFilled(vec2(p.x + 14 + 14 * f, p.y + 13), 5, lerpC(rgbm(0.8, 0.8, 0.85, 1), rgbm(0.04, 0.04, 0.05, 1), f), 12)
-  text(label, 10, vec2(p.x + 44, p.y + 7), rgbm(1, 1, 1, 0.9), F_BOLD)
-  return clicked
-end
-
 function tabSettings()
-  ui.childWindow('##set', vec2(580, 330), false, 0, function()
-  section('name over your car', GOLD)
-  if menuUI.nameEdit == nil then menuUI.nameEdit = myTag() end
-  ui.setNextItemWidth(300)
-  menuUI.nameEdit = ui.inputText('##tag', menuUI.nameEdit)
-  ui.sameLine(0, 8)
-  if nlButton('Save name', 110, GOLD) then
-    local v = menuUI.nameEdit:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, 15)
-    if v ~= '' then store.tag = v; broadcastRank() end
-    menuUI.nameEdit = myTag()
-  end
-  section('card frame colour', GOLD)
-  for i, f in ipairs(FRAMES) do
-    local col = f[2] or RANKS[rankIndex].col
+  ui.childWindow('##set', vec2(600, 440), false, 0, function()
+    pushKitStyle()
+    section('name over your car', BLUE, 'cards')
+    if menuUI.nameEdit == nil then menuUI.nameEdit = myTag() end
     local p = ui.getCursor()
-    ui.invisibleButton('##fr' .. i, vec2(26, 26))
-    local hov = ui.itemHovered()
-    if ui.itemClicked(ui.MouseButton.Left) then store.frame = i - 1; broadcastRank() end
-    local hf = ease('fr' .. i, hov and 1 or 0)
-    ui.drawCircleFilled(vec2(p.x + 13, p.y + 13), 10 + 2 * hf, col, 20)
-    if store.frame == i - 1 then ui.drawCircle(vec2(p.x + 13, p.y + 13), 13, rgbm(1, 1, 1, 1), 20, 2) end
-    if hov then ui.setTooltip(f[1]) end
-    if i < #FRAMES then ui.sameLine(0, 8) end
-  end
-  section('menu key', GOLD)
-  if menuButton then
-    local okc = pcall(function() menuButton:control(vec2(160, 24)) end)
-    if not okc then ui.text('current key: ' .. MENU_KEY) end
-  else
-    ui.text('current key: ' .. MENU_KEY)
-  end
-  section('display', GOLD)
-  if nlToggle('Show other players\' calling cards and names', store.showOthersCards) then store.showOthersCards = not store.showOthersCards end
-  if nlToggle('Always show the HUD', store.alwaysShow) then store.alwaysShow = not store.alwaysShow end
-  ui.setNextItemWidth(260)
-  store.hudScale = ui.slider('##hs', store.hudScale, 0.6, 1.8, 'HUD size: %.2f')
-  ui.setNextItemWidth(260)
-  store.nameplateScale = ui.slider('##ns', store.nameplateScale, 0.6, 1.6, 'Card size over cars: %.2f')
-  if ENABLE_EMOTES then
-    section('emotes  (numpad 1 - ' .. #EMOTES .. ')', GOLD)
-    for i, e in ipairs(EMOTES) do
-      if nlButton(i .. '  ' .. e, 84) then sendEmote(i) end
-      if i < #EMOTES then ui.sameLine(0, 6) end
+    pill(p, 300, 32, false, 0)
+    ui.setCursor(vec2(p.x + 12, p.y + 5))
+    ui.setNextItemWidth(276)
+    pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+    menuUI.nameEdit = ui.inputText('##tag', menuUI.nameEdit)
+    pcall(function() ui.popStyleColor() end)
+    ui.setCursor(vec2(p.x + 310, p.y))
+    if nlButton('Save name', 130, BLUE, 32, 'check') then
+      local v = menuUI.nameEdit:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, 15)
+      if v ~= '' then store.tag = v; broadcastRank() end
+      menuUI.nameEdit = myTag()
     end
-  end
-  if ENABLE_FLASH_RACE then
-    section('flash race', GOLD)
-    text('Flash your headlights twice at someone close by (under 60 km/h). They get an Accept / Decline popup. ' .. RACE_GET_READY .. ' s to line up, then ' .. RACE_SECONDS .. ' s. In front at the end wins. Flip = loss.', 9, ui.getCursor() + vec2(4, 0), DIM)
-    ui.dummy(vec2(1, 16))
-    if duel.state ~= 'idle' and nlButton('Cancel race', 120, RED) then duelCancel(true) end
-  end
-  if chase.state ~= 'idle' and nlButton('Cancel chase', 120, RED) then chaseReset() end
+    section('card frame colour', BLUE, 'paint')
+    for i, f in ipairs(FRAMES) do
+      local col = f[2] or RANKS[rankIndex].col
+      local q = ui.getCursor()
+      ui.invisibleButton('##fr' .. i, vec2(32, 32))
+      local hov = ui.itemHovered()
+      if ui.itemClicked(ui.MouseButton.Left) then store.frame = i - 1; broadcastRank() end
+      local hf = ease('fr' .. i, hov and 1 or 0)
+      ui.drawCircleFilled(vec2(q.x + 16, q.y + 16), 11 + 2 * hf, col, 24)
+      if store.frame == i - 1 then ui.drawCircle(vec2(q.x + 16, q.y + 16), 15, rgbm(1, 1, 1, 1), 24, 2) end
+      if hov then ui.setTooltip(f[1]) end
+      if i < #FRAMES then ui.sameLine(0, 10) end
+    end
+    section('menu key', BLUE, 'key')
+    if menuButton then
+      local okc = pcall(function() menuButton:control(vec2(180, 28)) end)
+      if not okc then ui.text('current key: ' .. MENU_KEY) end
+    else
+      ui.text('current key: ' .. MENU_KEY)
+    end
+    section('display', BLUE, 'eye')
+    if nlToggle('Show other players\' cards and names', store.showOthersCards, 340) then store.showOthersCards = not store.showOthersCards end
+    ui.dummy(vec2(1, 4))
+    if nlToggle('Always show the HUD', store.alwaysShow, 340) then store.alwaysShow = not store.alwaysShow end
+    ui.dummy(vec2(1, 6))
+    ui.setNextItemWidth(340)
+    store.hudScale = ui.slider('##hs', store.hudScale, 0.6, 1.8, 'HUD size: %.2f')
+    ui.setNextItemWidth(340)
+    store.nameplateScale = ui.slider('##ns', store.nameplateScale, 0.6, 1.6, 'Card size over cars: %.2f')
+    if ENABLE_EMOTES then
+      section('emotes  (numpad 1 - ' .. #EMOTES .. ')', BLUE, 'emote')
+      for i, e in ipairs(EMOTES) do
+        if nlButton(i .. '  ' .. e, 88, nil, 32) then sendEmote(i) end
+        if i < #EMOTES then ui.sameLine(0, 6) end
+      end
+    end
+    if ENABLE_FLASH_RACE then
+      section('flash race', BLUE, 'race')
+      text('Flash your headlights twice at someone close by (under 60 km/h). They get an Accept / Decline popup. ' .. RACE_GET_READY .. ' s to line up, then ' .. RACE_SECONDS .. ' s. In front at the end wins. Flip = loss.', 9, ui.getCursor() + vec2(4, 0), DIM)
+      ui.dummy(vec2(1, 18))
+      if duel.state ~= 'idle' and nlButton('Cancel race', 140, RED, 32, 'close') then duelCancel(true) end
+    end
+    if chase.state ~= 'idle' and nlButton('Cancel chase', 140, RED, 32, 'close') then chaseReset() end
   if ENABLE_POLICE or ENABLE_RACE_ZONES then
     ui.separator()
     ui.text('Zones   (' .. zonesSource .. ')')
@@ -2527,50 +2697,48 @@ function tabSettings()
     end
     ui.textColored('Place zones, Copy zones.json, paste it into zones.json on GitHub. Everyone gets them next join.', DIM)
   end
+    popKitStyle()
   end)
 end
 
 function drawMenu()
     local R = RANKS[rankIndex]
     local nxt = RANKS[rankIndex + 1]
-    local W = 580
-    -- header strip
+    local W = 600
     local p = ui.getCursor()
-    ui.dummy(vec2(W, 118))
-    pcall(function() ui.drawRectFilledMultiColor(p, p + vec2(W, 118), withA(R.col, 0.22), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(R.col, 0.06)) end)
-    ui.drawRectFilled(vec2(p.x, p.y + 117), vec2(p.x + W, p.y + 118), withA(R.col, 0.5))
-    -- how everyone else sees you
-    local k = 2.4
+    -- profile strip: card preview + rank + xp bar + badges
+    ui.dummy(vec2(W, 110))
+    ui.drawRectFilled(p, p + vec2(W, 110), rgbm(0, 0, 0, 0.45), 12)
+    ui.drawRect(p, p + vec2(W, 110), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
+    local k = 2.2
     local cw, ch = 150 * k, 37.5 * k
-    drawNameplate(p.x + 12 + cw / 2, p.y + 14 + ch + 10 * k, k, 1, myTag(), R, myCard(), isTopRun(), store.prestige, wantedIndex == 0, onFire, myEmote.text, t - myEmote.t, store.frame)
-    local tx = p.x + cw + 32
-    text(R.name:upper(), 22, vec2(tx, p.y + 18), R.col, F_BOLD)
-    text('RANK ' .. rankIndex .. ' / ' .. #RANKS .. (store.prestige > 0 and ('   PRESTIGE ' .. store.prestige) or ''), 9, vec2(tx, p.y + 46), DIM, F_BOLD)
-    text(fmt(store.xp) .. ' XP', 12, vec2(tx, p.y + 60), rgbm(1, 1, 1, 1), F_BOLD)
+    drawNameplate(p.x + 14 + cw / 2, p.y + 12 + ch + 10 * k, k, 1, myTag(), R, myCard(), isTopRun(), store.prestige, wantedIndex == 0, onFire, myEmote.text, t - myEmote.t, store.frame)
+    local tx = p.x + cw + 34
+    text(R.name:upper(), 20, vec2(tx, p.y + 14), R.col, F_BOLD)
+    text('RANK ' .. rankIndex .. ' / ' .. #RANKS .. (store.prestige > 0 and ('   PRESTIGE ' .. store.prestige) or '') .. '   ' .. fmt(store.xp) .. ' XP', 8, vec2(tx, p.y + 40), DIM, F_BOLD)
     if nxt then
       local f = ease('hdrbar', (store.xp - R.xp) / (nxt.xp - R.xp), 6)
-      ui.drawRectFilled(vec2(tx, p.y + 82), vec2(tx + 190, p.y + 86), rgbm(1, 1, 1, 0.1), 2)
-      ui.drawRectFilled(vec2(tx, p.y + 82), vec2(tx + 190 * math.max(0, math.min(1, f)), p.y + 86), R.col, 2)
-      text(fmt(nxt.xp - store.xp) .. ' to ' .. nxt.name:upper(), 8, vec2(tx, p.y + 92), DIM, F_BOLD)
+      ui.drawRectFilled(vec2(tx, p.y + 58), vec2(tx + 220, p.y + 64), rgbm(1, 1, 1, 0.08), 3)
+      hgrad(vec2(tx, p.y + 58), vec2(tx + 220 * math.max(0.02, math.min(1, f)), p.y + 64), R.col, withA(R.col, 0.4), 3)
+      text(fmt(nxt.xp - store.xp) .. ' TO ' .. nxt.name:upper(), 8, vec2(tx, p.y + 70), DIM, F_BOLD)
     else
-      text('MAX RANK', 8, vec2(tx, p.y + 92), GOLD, F_BOLD)
+      text('MAX RANK', 8, vec2(tx, p.y + 70), GOLD, F_BOLD)
     end
-    local badges, bx = {}, p.x + W - 12
+    local badges = {}
     local newN = countNewCards()
-    if newN > 0 then badges[#badges + 1] = { newN .. ' NEW CARD' .. (newN > 1 and 'S' or ''), GREEN } end
+    if newN > 0 then badges[#badges + 1] = { newN .. ' NEW CARD' .. (newN > 1 and 'S' or ''), BLUE } end
     if boostActive() then badges[#badges + 1] = { XP_BOOST.mult .. 'X XP', GOLD } end
     if adminBoostActive() then badges[#badges + 1] = { '2X XP EVENT', GOLD } end
-    if admin.isAdmin then badges[#badges + 1] = { 'ADMIN  ' .. ADMIN_KEY:upper(), RED } end
     if wantedIndex == 0 then badges[#badges + 1] = { 'WANTED', RED } end
-    if backendOK then badges[#badges + 1] = { 'SERVER SAVED', DIM } end
-    local by = p.y + 16
+    if admin.isAdmin then badges[#badges + 1] = { 'ADMIN  ' .. ADMIN_KEY:upper(), RED } end
+    local bx = tx
     for _, b in ipairs(badges) do
-      local bw = textW(b[1], 8, F_BOLD).x + 14
-      ui.drawRectFilled(vec2(bx - bw, by), vec2(bx, by + 16), withA(b[2], 0.9), 3)
-      text(b[1], 8, vec2(bx - bw + 7, by + 3), b[2] == DIM and rgbm(1, 1, 1, 1) or rgbm(0.05, 0.05, 0.05, 1), F_BOLD)
-      by = by + 20
+      local bw = textW(b[1], 8, F_BOLD).x + 16
+      ui.drawRectFilled(vec2(bx, p.y + 86), vec2(bx + bw, p.y + 102), withA(b[2], 0.9), 8)
+      text(b[1], 8, vec2(bx + 8, p.y + 90), b[2] == GOLD and rgbm(0.05, 0.05, 0.05, 1) or rgbm(1, 1, 1, 1), F_BOLD)
+      bx = bx + bw + 6
     end
-    ui.setCursor(vec2(p.x, p.y + 124))
+    ui.setCursor(vec2(p.x, p.y + 120))
     nlTabs('m', { 'Cards', 'Challenges', 'Leaderboard', 'Stats', 'Settings' }, menuUI, W)
     if menuUI.tab == 1 then tabCards()
     elseif menuUI.tab == 2 then tabChallenges()
@@ -2600,34 +2768,6 @@ end
 
 -- in-game window with its own frame (drawn with ui.transparentWindow so it works while driving)
 local panelAnim = {}
-function drawPanel(id, title, subtitle, w, h, accent, fn, onClose)
-  local sim = ac.getSim()
-  local f = ease('panel' .. id, 1, 10)
-  local sc = 0.96 + 0.04 * f
-  local pw, ph = w * sc, h * sc
-  local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
-  ui.transparentWindow('nl_' .. id, vec2(px - 20, py - 20), vec2(pw + 40, ph + 40), true, true, function()
-    local o = vec2(20, 20)
-    ui.drawRectFilled(o + vec2(6, 12), o + vec2(pw + 6, ph + 12), rgbm(0, 0, 0, 0.45 * f), 14)
-    ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.055, 0.06, 0.075, 0.97 * f), 12)
-    pcall(function() ui.drawRectFilledMultiColor(o, o + vec2(pw, 70), withA(accent, 0.25 * f), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(accent, 0.04 * f)) end)
-    ui.drawRect(o + vec2(0.5, 0.5), o + vec2(pw - 0.5, ph - 0.5), rgbm(1, 1, 1, 0.09 * f), 12, ui.CornerFlags.All, 1)
-    ui.drawRectFilled(o + vec2(12, 0), o + vec2(pw - 12, 2), withA(accent, 0.8 * f), 1)
-    text(title, 18, o + vec2(18, 14), rgbm(1, 1, 1, f), F_BOLD)
-    if subtitle then text(subtitle, 9, o + vec2(18, 38), withA(DIM, f), F_BOLD) end
-    -- close button
-    ui.setCursor(o + vec2(pw - 40, 12))
-    ui.invisibleButton('##close' .. id, vec2(28, 28))
-    local hov = ui.itemHovered()
-    local hf = ease('close' .. id, hov and 1 or 0)
-    ui.drawCircleFilled(o + vec2(pw - 26, 26), 13, rgbm(1, 1, 1, 0.06 + 0.12 * hf), 20)
-    text('x', 13, o + vec2(pw - 30, 17), rgbm(1, 1, 1, 0.6 + 0.4 * hf), F_BOLD)
-    if ui.itemClicked(ui.MouseButton.Left) then onClose() end
-    ui.setCursor(o + vec2(18, 56))
-    fn()
-  end)
-end
-
 function openMenu()
   menu.open = not menu.open
   if menu.open then anim['panelmain'] = 0 end
@@ -2636,23 +2776,23 @@ end
 ------------------------------------------------------------------ admin panel (only after /admin <password> in chat)
 
 admin = { open = false, tab = 1, tabX = 0, tabW = 0, say = '', time = 20, transition = 60, rain = 0, wet = 0, water = 0, grip = 1.0, checkT = 0, boostMin = 30, announce = '', restrict = 0, ballast = 0, isAdmin = false, log = {} }
-local adminEvent = nil
-local adminBoost = { until_ = -1, mult = 1 }
+adminEvent = nil
+adminBoost = { until_ = -1, mult = 1 }
 
-local WEATHERS = {
+WEATHERS = {
   { 'Clear', 15 }, { 'Few clouds', 16 }, { 'Scattered', 17 }, { 'Broken clouds', 18 }, { 'Overcast', 19 },
   { 'Fog', 20 }, { 'Mist', 21 }, { 'Haze', 23 }, { 'Windy', 31 },
   { 'Light drizzle', 3 }, { 'Drizzle', 4 }, { 'Light rain', 6 }, { 'Rain', 7 }, { 'Heavy rain', 8 },
   { 'Thunderstorm', 1 }, { 'Heavy storm', 2 }, { 'Light snow', 9 }, { 'Snow', 10 }, { 'Hail', 32 },
 }
-local TIMES = { { 'Dawn', 5.5 }, { 'Sunrise', 6.5 }, { 'Morning', 9 }, { 'Noon', 12 }, { 'Afternoon', 15 }, { 'Golden', 17.5 }, { 'Sunset', 19 }, { 'Dusk', 20 }, { 'Night', 22 }, { 'Midnight', 0 } }
+TIMES = { { 'Dawn', 5.5 }, { 'Sunrise', 6.5 }, { 'Morning', 9 }, { 'Noon', 12 }, { 'Afternoon', 15 }, { 'Golden', 17.5 }, { 'Sunset', 19 }, { 'Dusk', 20 }, { 'Night', 22 }, { 'Midnight', 0 } }
 
-local function adminLog(s)
+function adminLog(s)
   admin.log[#admin.log + 1] = s
   if #admin.log > 8 then table.remove(admin.log, 1) end
 end
 
-local function cmd(c)
+function cmd(c)
   local ok, err = pcall(function() ac.sendChatMessage(c) end)
   adminLog((ok and '> ' or 'failed: ') .. c)
   if not ok then dlog('chat command failed: ' .. tostring(err)) end
@@ -2678,14 +2818,14 @@ pcall(function()
   end)
 end)
 
-local function adminSend(kind, value, textv)
+function adminSend(kind, value, textv)
   if not adminEvent then return end
   pcall(function() adminEvent({ kind = kind, value = value or 0, text = (textv or ''):sub(1, 59) }, false) end)
 end
 
 function adminBoostActive() return adminBoost.until_ > t end
 
-local function adminTabPlayers()
+function adminTabPlayers()
   ui.childWindow('##adm_pl', vec2(600, 400), false, 0, function()
     section('players on the server', RED)
     local rows = {}
@@ -2737,7 +2877,7 @@ local function adminTabPlayers()
   end)
 end
 
-local function adminTabWorld()
+function adminTabWorld()
   ui.childWindow('##adm_w', vec2(600, 400), false, 0, function()
     section('time of day   (changes for everyone, no restart)', RED)
     for i, tm in ipairs(TIMES) do
@@ -2770,7 +2910,7 @@ local function adminTabWorld()
   end)
 end
 
-local function adminTabServer()
+function adminTabServer()
   ui.childWindow('##adm_s', vec2(600, 400), false, 0, function()
     section('say something as the server', RED)
     ui.setNextItemWidth(440)
@@ -2812,24 +2952,43 @@ function adminUpdate(dt)
     admin.checkT = 0
     pcall(function() ac.checkAdminPrivileges() end)
   end
-  pcall(function() admin.isAdmin = ac.getSim().isAdmin == true end)
+  pcall(function() admin.isAdmin = ac.getSim().isAdmin == true or admin.chatAdmin == true end)
   if admin.open and not admin.isAdmin then admin.open = false end
 end
 
+adminButton = nil
+pcall(function() adminButton = ac.ControlButton('NL_ADMIN_MENU', { keyboard = { key = ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Delete } }) end)
 function adminKeyPressed()
+  if adminButton then
+    local ok, v = pcall(function() return adminButton:pressed() end)
+    if ok and v == true then return true end
+  end
   local ok, v = pcall(function() return ui.keyboardButtonPressed(ui.KeyIndex[ADMIN_KEY] or ui.KeyIndex.Delete) end)
   return ok and v == true
 end
 
-local baseDrawUI = script.drawUI
-local drawErr = nil
+-- the server answers /admin <password> in chat. that reply is the second way we know you are admin
+pcall(function()
+  ac.onChatMessage(function(message, carIdx)
+    local m = tostring(message or ''):lower()
+    if (carIdx == nil or carIdx < 0 or carIdx == 0) and m:find('admin', 1, true) and (m:find('now', 1, true) or m:find('granted', 1, true) or m:find('logged', 1, true) or m:find('you are', 1, true) or m:find('privileges', 1, true)) then
+      admin.chatAdmin = true
+      admin.isAdmin = true
+      pcall(function() ui.toast(ui.Icons and ui.Icons.Confirm or 'fx:loading', 'Admin panel unlocked. Press ' .. ADMIN_KEY:upper() .. '.') end)
+    end
+    return false
+  end)
+end)
+
+baseDrawUI = script.drawUI
+drawErr = nil
 function script.drawUI(dt)
   if not started then return end
   local ok, err = pcall(baseDrawUI, dt)
   if not ok and drawErr ~= tostring(err) then drawErr = tostring(err); dlog('draw error: ' .. drawErr) end
   if menuKeyPressed() then openMenu() end
   if menu.open then
-    local okm, errm = pcall(drawPanel, 'main', 'NO LICENSE RANKS', 'press ' .. MENU_KEY:upper() .. ' to close', 620, 690, RANKS[rankIndex].col, drawMenu, function() menu.open = false end)
+    local okm, errm = pcall(drawPanel, 'main', 'No License Ranks', 'cards  -  challenges  -  leaderboard', 644, 780, BLUE, drawMenu, function() menu.open = false end, 'cards', MENU_KEY)
     if not okm and drawErr ~= tostring(errm) then drawErr = tostring(errm); dlog('menu error: ' .. drawErr) end
   end
   adminUpdate(dt)
@@ -2838,7 +2997,7 @@ function script.drawUI(dt)
     else pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Admin panel: type /admin <password> in chat first.') end) end
   end
   if admin.open then
-    local oka, erra = pcall(drawPanel, 'admin', 'NO LICENSE ADMIN', 'server control   -   ' .. ADMIN_KEY:upper() .. ' to close', 640, 560, RED, drawAdminMenu, function() admin.open = false end)
+    local oka, erra = pcall(drawPanel, 'admin', 'No License Admin', 'server control', 664, 640, RED, drawAdminMenu, function() admin.open = false end, 'admin', ADMIN_KEY)
     if not oka and drawErr ~= tostring(erra) then drawErr = tostring(erra); dlog('admin error: ' .. drawErr) end
   end
   -- hint on the left after joining

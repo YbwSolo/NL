@@ -2,10 +2,11 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.3'
+local VERSION = '2.4'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
+local ICON_ATLAS = 'https://raw.githubusercontent.com/YbwSolo/NL/main/icons/ui_atlas.png'
 local HINT_SECONDS = 30
 
 ------------------------------------------------------------------ car knowledge
@@ -893,15 +894,12 @@ end
 
 ------------------------------------------------------------------ UI
 
-local GREEN = rgbm(0, 0.94, 0.35, 1)
-local GOLD = rgbm(1, 0.8, 0.2, 1)
-local RED = rgbm(1, 0.25, 0.22, 1)
-local DIM = rgbm(0.55, 0.57, 0.62, 1)
-local WARN = rgbm(1, 0.75, 0.3, 1)
-local F_BOLD = 'Bahnschrift;Weight=Bold'
-local F_MED = 'Bahnschrift;Weight=SemiBold'
-local menuUI = { tab = 1, tabX = 0, tabW = 0 }
-local anim = {}
+GREEN = rgbm(0, 0.94, 0.35, 1)
+GOLD = rgbm(1, 0.8, 0.2, 1)
+RED = rgbm(1, 0.25, 0.22, 1)
+WARN = rgbm(1, 0.75, 0.3, 1)
+F_BOLD = 'Bahnschrift;Weight=Bold'
+F_MED = 'Bahnschrift;Weight=SemiBold'
 
 function text(txt, size, pos, col, font)
   ui.pushDWriteFont(font or F_MED)
@@ -915,7 +913,22 @@ function textW(txt, size, font)
   return w
 end
 function withA(c, a) return rgbm(c.r, c.g, c.b, (c.mult or 1) * a) end
-function lerpC(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
+
+------------------------------------------------------------------ UI kit (glass panels, pill tabs, icon atlas)
+
+menuUI = { nameEdit = nil, tab = 1, search = '' }
+DIM = rgbm(0.56, 0.58, 0.64, 1)
+BLUE = rgbm(0, 0.47, 1, 1)
+BORDER = rgbm(0.44, 0.44, 0.44, 1)
+GLASS = rgbm(0.02, 0.02, 0.03, 0.78)
+CARD = rgbm(0.06, 0.06, 0.075, 0.9)
+anim = {}
+ICONS = {
+cards = {0, 0}, challenges = {1, 0}, leaderboard = {2, 0}, stats = {3, 0}, settings = {4, 0}, paint = {5, 0}, interior = {6, 0}, plate = {7, 0}, glow = {0, 1}, looks = {1, 1}, tune = {2, 1}, showroom = {3, 1}, save = {4, 1}, players = {5, 1}, weather = {6, 1}, server = {7, 1}, time = {0, 2}, police = {1, 2}, race = {2, 2}, lock = {3, 2}, check = {4, 2}, close = {5, 2}, star = {6, 2}, fire = {7, 2}, skull = {0, 3}, admin = {1, 3}, emote = {2, 3}, search = {3, 3}, chevron = {4, 3}, crown = {5, 3}, bolt = {6, 3}, rain = {7, 3}, snow = {0, 4}, sun = {1, 4}, moon = {2, 4}, ban = {3, 4}, kick = {4, 4}, pit = {5, 4}, warning = {6, 4}, key = {7, 4}, speed = {0, 5}, combo = {1, 5}, proximity = {2, 5}, medal = {3, 5}, wind = {4, 5}, car = {5, 5}, calendar = {6, 5}, gift = {7, 5}, copy = {0, 6}, paste = {1, 6}, reset = {2, 6}, wheel = {3, 6}, brake = {4, 6}, drop = {5, 6}, message = {6, 6}, eye = {7, 6}, eyeoff = {0, 7}, up = {1, 7}, info = {2, 7}, grip = {3, 7}, session = {4, 7}, xp = {5, 7}, target = {6, 7}, home = {7, 7}
+}
+ICON_COLS, ICON_ROWS = 8, 8
+
+
 function ease(id, target, speed)
   local dt = 0.016
   pcall(function() dt = math.min(0.1, ac.getSim().dt or 0.016) end)
@@ -926,74 +939,209 @@ function ease(id, target, speed)
   return v
 end
 
-function nlButton(label, w, accent, h)
-  h = h or 28
+function lerpC(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
+
+-- icon from the atlas
+function icon(name, p, size, col)
+  local c = ICONS[name]
+  if not c then return end
+  local u1 = vec2(c[1] / ICON_COLS, c[2] / ICON_ROWS)
+  local u2 = vec2((c[1] + 1) / ICON_COLS, (c[2] + 1) / ICON_ROWS)
+  pcall(function() ui.drawImage(ICON_ATLAS, p, p + vec2(size, size), col or rgbm(1, 1, 1, 1), u1, u2) end)
+end
+
+-- horizontal gradient fill (left colour -> right colour), falls back to flat
+function hgrad(p1, p2, cl, cr, r)
+  local ok = pcall(function() ui.drawRectFilledMultiColor(p1, p2, cl, cr, cr, cl) end)
+  if not ok then ui.drawRectFilled(p1, p2, lerpC(cl, cr, 0.5), r or 0) end
+end
+
+-- glass box with the 1px dark border, as in the design
+function glass(p1, p2, r, a)
+  a = a or 1
+  ui.drawRectFilled(p1 + vec2(1, 4), p2 + vec2(1, 4), rgbm(0, 0, 0, 0.2 * a), r)
+  ui.drawRectFilled(p1, p2, withA(GLASS, a), r)
+  ui.drawRect(p1, p2, rgbm(0.016, 0.012, 0.024, 0.72 * a), r, ui.CornerFlags.All, 1)
+end
+
+-- the blue pill (active) or dark pill (inactive), used for tabs and buttons
+function pill(p, w, h, active, f, a)
+  a = a or 1
+  if active then
+    ui.drawRectFilled(p, p + vec2(w, h), withA(BLUE, 0.21 * a), 12)
+    hgrad(p, p + vec2(w, h), withA(BLUE, (0.85 + 0.15 * f) * a), withA(BLUE, 0.21 * a), 12)
+    ui.drawRect(p, p + vec2(w, h), withA(BLUE, a), 12, ui.CornerFlags.All, 1)
+  else
+    ui.drawRectFilled(p, p + vec2(w, h), rgbm(0, 0, 0, (0.5 + 0.2 * f) * a), 12)
+    ui.drawRect(p, p + vec2(w, h), lerpC(rgbm(0.016, 0.012, 0.024, 0.72), rgbm(0.5, 0.5, 0.52, 0.9), f), 12, ui.CornerFlags.All, 1)
+  end
+end
+
+-- button. accent = any colour means "primary" (blue pill); nil = dark pill. optional icon name
+function nlButton(label, w, accent, h, ic)
+  h = h or 32
   local p = ui.getCursor()
   ui.invisibleButton('##b' .. label, vec2(w, h))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
   local f = ease('b' .. label, hov and 1 or 0)
-  if accent then
-    ui.drawRectFilled(p, p + vec2(w, h), withA(accent, 0.8 + 0.2 * f), 5)
-    ui.drawRectFilled(vec2(p.x, p.y + h - 2), vec2(p.x + w, p.y + h), rgbm(0, 0, 0, 0.25), 1)
+  local shown = label:gsub('##.*$', '')
+  if accent and accent ~= BLUE and accent ~= GOLD and accent ~= GREEN then
+    -- custom colour pill (red for danger etc)
+    ui.drawRectFilled(p, p + vec2(w, h), withA(accent, 0.18 + 0.1 * f), 12)
+    ui.drawRect(p, p + vec2(w, h), withA(accent, 0.9), 12, ui.CornerFlags.All, 1)
   else
-    ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.07 + 0.1 * f), 5)
-    ui.drawRect(p, p + vec2(w, h), rgbm(1, 1, 1, 0.08 + 0.3 * f), 5, ui.CornerFlags.All, 1)
+    pill(p, w, h, accent ~= nil, f)
   end
-  local tw = textW(label, 11, F_BOLD)
-  text(label, 11, vec2(p.x + (w - tw.x) / 2, p.y + (h - 13) / 2), accent and rgbm(0.04, 0.04, 0.05, 1) or rgbm(1, 1, 1, 0.85 + 0.15 * f), F_BOLD)
+  local tw = textW(shown:upper(), 12, F_BOLD)
+  local iw = ic and 18 or 0
+  local x = p.x + (w - tw.x - iw) / 2
+  if ic then icon(ic, vec2(x, p.y + (h - 14) / 2), 14, rgbm(1, 1, 1, 0.9)) end
+  text(shown:upper(), 12, vec2(x + iw, p.y + (h - 14) / 2), rgbm(1, 1, 1, 0.85 + 0.15 * f), F_BOLD)
   return clicked
 end
 
 function nlToggle(label, on, w)
   local p = ui.getCursor()
-  w = w or 200
-  ui.invisibleButton('##t' .. label, vec2(w, 28))
+  w = w or 260
+  ui.invisibleButton('##t' .. label, vec2(w, 32))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
   local f = ease('tg' .. label, on and 1 or 0)
   local hf = ease('tgh' .. label, hov and 1 or 0)
-  ui.drawRectFilled(p, p + vec2(w, 28), rgbm(1, 1, 1, 0.05 + 0.05 * hf), 5)
-  ui.drawRectFilled(vec2(p.x + 8, p.y + 8), vec2(p.x + 34, p.y + 20), lerpC(rgbm(1, 1, 1, 0.15), GREEN, f), 6)
-  ui.drawCircleFilled(vec2(p.x + 14 + 14 * f, p.y + 14), 5, lerpC(rgbm(0.8, 0.8, 0.85, 1), rgbm(0.04, 0.04, 0.05, 1), f), 12)
-  text(label, 11, vec2(p.x + 44, p.y + 7), rgbm(1, 1, 1, 0.9), F_BOLD)
+  pill(p, w, 32, false, hf)
+  ui.drawRectFilled(vec2(p.x + 10, p.y + 9), vec2(p.x + 38, p.y + 23), lerpC(rgbm(1, 1, 1, 0.12), BLUE, f), 7)
+  ui.drawCircleFilled(vec2(p.x + 17 + 14 * f, p.y + 16), 5.5, rgbm(1, 1, 1, 0.95), 12)
+  text(label:upper(), 11, vec2(p.x + 48, p.y + 9), rgbm(1, 1, 1, 0.85 + 0.15 * hf), F_BOLD)
   return clicked
 end
 
-function section(label, col)
+function section(label, col, ic)
   local p = ui.getCursor()
-  ui.dummy(vec2(10, 18))
-  ui.drawRectFilled(vec2(p.x, p.y + 4), vec2(p.x + 3, p.y + 14), col or GREEN, 1)
-  text(label:upper(), 9, vec2(p.x + 9, p.y + 3), rgbm(0.75, 0.77, 0.82, 1), F_BOLD)
+  ui.dummy(vec2(10, 22))
+  if ic then icon(ic, vec2(p.x, p.y + 2), 13, col or BLUE) end
+  text(label:upper(), 10, vec2(p.x + (ic and 19 or 0), p.y + 3), rgbm(0.82, 0.84, 0.88, 1), F_BOLD)
+  local tw = textW(label:upper(), 10, F_BOLD).x
+  ui.drawRectFilled(vec2(p.x + (ic and 19 or 0) + tw + 10, p.y + 10), vec2(p.x + 560, p.y + 11), rgbm(1, 1, 1, 0.08))
 end
 
+TAB_ICONS = { cards = 'cards', challenges = 'challenges', leaderboard = 'leaderboard', stats = 'stats', settings = 'settings',
+  paint = 'paint', interior = 'interior', plate = 'plate', glow = 'glow', looks = 'looks', tune = 'tune', showroom = 'showroom', save = 'save',
+  players = 'players', ['time & weather'] = 'weather', server = 'server' }
+
+-- pill tabs with icons
 function nlTabs(id, labels, state, w)
   local p = ui.getCursor()
-  local h = 30
-  ui.dummy(vec2(w, h + 6))
-  ui.drawRectFilled(vec2(p.x, p.y + h), vec2(p.x + w, p.y + h + 1), rgbm(1, 1, 1, 0.08))
+  local h = 32
+  ui.dummy(vec2(w, h + 10))
   local x = p.x
-  local selX, selW = p.x, 40
   for i, label in ipairs(labels) do
-    local tw = textW(label, 11, F_BOLD).x
-    local bw = tw + 24
+    local ic = TAB_ICONS[label:lower()]
+    local tw = textW(label:upper(), 11, F_BOLD).x
+    local bw = tw + 30 + (ic and 18 or 0)
     ui.setCursor(vec2(x, p.y))
     ui.invisibleButton('##tab' .. id .. i, vec2(bw, h))
     local hov = ui.itemHovered()
     if ui.itemClicked(ui.MouseButton.Left) then state.tab = i end
     local sel = state.tab == i
-    local f = ease('tab' .. id .. i, (sel and 1 or (hov and 0.5 or 0)))
-    text(label, 11, vec2(x + 12, p.y + 9), lerpC(rgbm(0.6, 0.62, 0.68, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
-    if sel then selX, selW = x + 8, bw - 16 end
-    x = x + bw
+    local f = ease('tab' .. id .. i, hov and 1 or 0)
+    pill(vec2(x, p.y), bw, h, sel, f)
+    local tx = x + 15
+    if ic then icon(ic, vec2(tx, p.y + 9), 14, rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f)); tx = tx + 18 end
+    text(label:upper(), 11, vec2(tx, p.y + 9), rgbm(1, 1, 1, sel and 1 or 0.7 + 0.3 * f), F_BOLD)
+    x = x + bw + 8
   end
-  state.tabX = ease('tabx' .. id, selX, 18)
-  state.tabW = ease('tabw' .. id, selW, 18)
-  ui.drawRectFilled(vec2(state.tabX, p.y + h - 2), vec2(state.tabX + state.tabW, p.y + h + 1), GREEN, 1)
-  ui.setCursor(vec2(p.x, p.y + h + 8))
+  ui.setCursor(vec2(p.x, p.y + h + 12))
 end
 
-local SWATCHES = {
+function bar(frac, w, colr, id, h)
+  h = h or 6
+  local p = ui.getCursor()
+  ui.dummy(vec2(w, h + 2))
+  frac = math.max(0, math.min(1, frac))
+  if id then frac = ease('bar' .. id, frac, 6) end
+  ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.08), h / 2)
+  if frac > 0 then hgrad(p, p + vec2(math.max(h, w * frac), h), withA(colr or BLUE, 1), withA(colr or BLUE, 0.45), h / 2) end
+end
+
+-- search box in the design style
+function searchBox(id, value, w)
+  local p = ui.getCursor()
+  pill(p, w, 32, false, 0)
+  icon('search', vec2(p.x + 12, p.y + 9), 14, rgbm(1, 1, 1, 0.5))
+  ui.setCursor(vec2(p.x + 34, p.y + 5))
+  ui.setNextItemWidth(w - 44)
+  local v = value
+  pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+  v = ui.inputText('##' .. id, value)
+  pcall(function() ui.popStyleColor() end)
+  if value == '' and v == '' then text('SEARCH', 11, vec2(p.x + 34, p.y + 9), rgbm(1, 1, 1, 0.3), F_BOLD) end
+  ui.setCursor(vec2(p.x, p.y + 40))
+  return v
+end
+
+-- panel frame: 20px radius glass, 2px grey border, 64px header with its own bottom border
+function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
+  local sim = ac.getSim()
+  local f = ease('panel' .. id, 1, 10)
+  local sc = 0.97 + 0.03 * f
+  local pw, ph = w * sc, h * sc
+  local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
+  ui.transparentWindow('nl_' .. id, vec2(px - 24, py - 24), vec2(pw + 48, ph + 48), true, true, function()
+    local o = vec2(24, 24)
+    ui.drawRectFilled(o + vec2(2, 8), o + vec2(pw + 2, ph + 8), rgbm(0, 0, 0, 0.35 * f), 20)
+    ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.016, 0.012, 0.024, 0.86 * f), 20)
+    -- header
+    hgrad(o, o + vec2(pw, 64), rgbm(0, 0, 0, 0.5 * f), rgbm(0.035, 0.035, 0.035, 0.16 * f), 20)
+    ui.drawRectFilled(o + vec2(0, 62), o + vec2(pw, 64), withA(BORDER, 0.9 * f))
+    ui.drawRect(o + vec2(1, 1), o + vec2(pw - 1, ph - 1), withA(BORDER, 0.9 * f), 20, ui.CornerFlags.All, 2)
+    if ic then
+      ui.drawRectFilled(o + vec2(18, 16), o + vec2(50, 48), withA(accent, 0.25 * f), 8)
+      icon(ic, o + vec2(24, 22), 20, withA(accent, f))
+    end
+    text(title:upper(), 15, o + vec2(ic and 60 or 20, 17), rgbm(1, 1, 1, f), F_BOLD)
+    if subtitle then text(subtitle:upper(), 8, o + vec2(ic and 60 or 20, 38), withA(DIM, f), F_BOLD) end
+    -- key hint pill + close
+    local kx = o.x + pw - 112
+    if keyName then
+      local kw = textW(keyName:upper(), 10, F_BOLD).x + 22
+      kx = o.x + pw - 60 - kw
+      pill(vec2(kx, o.y + 16), kw, 32, false, 0)
+      text(keyName:upper(), 10, vec2(kx + 11, o.y + 26), rgbm(1, 1, 1, 0.75), F_BOLD)
+    end
+    ui.setCursor(o + vec2(pw - 50, 16))
+    ui.invisibleButton('##close' .. id, vec2(32, 32))
+    local hov = ui.itemHovered()
+    local hf = ease('close' .. id, hov and 1 or 0)
+    pill(o + vec2(pw - 50, 16), 32, 32, false, hf)
+    icon('close', o + vec2(pw - 41, 25), 14, rgbm(1, 1, 1, 0.7 + 0.3 * hf))
+    if ui.itemClicked(ui.MouseButton.Left) then onClose() end
+    ui.setCursor(o + vec2(22, 80))
+    fn()
+  end)
+end
+
+-- style ImGui sliders / inputs to match
+function pushKitStyle()
+  pcall(function()
+    ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0.5))
+    ui.pushStyleColor(ui.StyleColor.FrameBgHovered, rgbm(0, 0, 0, 0.65))
+    ui.pushStyleColor(ui.StyleColor.FrameBgActive, rgbm(0, 0, 0, 0.7))
+    ui.pushStyleColor(ui.StyleColor.SliderGrab, BLUE)
+    ui.pushStyleColor(ui.StyleColor.SliderGrabActive, withA(BLUE, 0.8))
+    ui.pushStyleColor(ui.StyleColor.Header, withA(BLUE, 0.3))
+    ui.pushStyleColor(ui.StyleColor.HeaderHovered, withA(BLUE, 0.45))
+    ui.pushStyleColor(ui.StyleColor.Button, rgbm(0, 0, 0, 0.5))
+    ui.pushStyleColor(ui.StyleColor.ButtonHovered, withA(BLUE, 0.5))
+    ui.pushStyleVar(ui.StyleVar.FrameRounding, 10)
+    ui.pushStyleVar(ui.StyleVar.GrabRounding, 10)
+  end)
+end
+function popKitStyle()
+  pcall(function() ui.popStyleColor(9); ui.popStyleVar(2) end)
+end
+
+SWATCHES = {
   { 'Nardo', 0.52, 0.53, 0.55 }, { 'Frozen black', 0.05, 0.05, 0.06 }, { 'Alpine white', 0.95, 0.95, 0.93 }, { 'NL green', 0.0, 0.94, 0.35 },
   { 'Candy red', 0.72, 0.02, 0.05 }, { 'Midnight', 0.2, 0.05, 0.4 }, { 'Miami blue', 0.0, 0.62, 0.8 }, { 'Gold', 0.85, 0.65, 0.15 },
   { 'Baby pink', 0.98, 0.65, 0.78 }, { 'Orange', 0.95, 0.4, 0.05 }, { 'Lime', 0.6, 0.95, 0.1 }, { 'Ice blue', 0.6, 0.85, 1.0 },
@@ -1001,10 +1149,11 @@ local SWATCHES = {
 }
 
 -- colour squares that grow on hover. click = paint
-function swatchRow(id)
-  local p = ui.getCursor()
+function swatchRow(id, x, y)
+  local p = vec2(x, y)
   local sz, gap = 28, 6
   local n = #SWATCHES
+  ui.setCursor(p)
   ui.invisibleButton('##sw' .. id, vec2(n * (sz + gap), sz + 6))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
@@ -1012,14 +1161,14 @@ function swatchRow(id)
   if hov or clicked then pcall(function() mx = ui.mouseLocalPos() end) end
   local hit = nil
   for i, sw in ipairs(SWATCHES) do
-    local x = p.x + (i - 1) * (sz + gap)
-    local over = mx and mx.x >= x and mx.x <= x + sz and mx.y >= p.y and mx.y <= p.y + sz + 6
+    local sx = p.x + (i - 1) * (sz + gap)
+    local over = mx and mx.x >= sx and mx.x <= sx + sz and mx.y >= p.y and mx.y <= p.y + sz + 6
     if over then hit = sw end
     local f = ease('sw' .. id .. i, over and 1 or 0, 18)
     local g = 3 * f
     local isSel = enabled[id] and math.abs(pick[id].r - sw[2]) < 0.01 and math.abs(pick[id].g - sw[3]) < 0.01 and math.abs(pick[id].b - sw[4]) < 0.01
-    ui.drawRectFilled(vec2(x - g, p.y + 3 - g), vec2(x + sz + g, p.y + 3 + sz + g), rgbm(sw[2], sw[3], sw[4], 1), 5)
-    if isSel then ui.drawRect(vec2(x - g - 1, p.y + 2 - g), vec2(x + sz + g + 1, p.y + 4 + sz + g), rgbm(1, 1, 1, 1), 5, ui.CornerFlags.All, 2) end
+    ui.drawRectFilled(vec2(sx - g, p.y + 3 - g), vec2(sx + sz + g, p.y + 3 + sz + g), rgbm(sw[2], sw[3], sw[4], 1), 8)
+    ui.drawRect(vec2(sx - g, p.y + 3 - g), vec2(sx + sz + g, p.y + 3 + sz + g), isSel and BLUE or rgbm(1, 1, 1, 0.1 + 0.3 * f), 8, ui.CornerFlags.All, isSel and 2 or 1)
   end
   if hit and hov then ui.setTooltip(hit[1]) end
   if clicked and hit then
@@ -1029,192 +1178,224 @@ function swatchRow(id)
   end
 end
 
--- one paint group as a card: toggle + current colour chip + swatches + picker
-function colourBlock(id, label, w)
-  w = w or 580
+-- one paint group as a card: header row with toggle + big colour chip, then swatches + picker when on
+function colourBlock(id, label, ic)
+  local w = 580
   ui.pushID(id)
   local p = ui.getCursor()
   local open = enabled[id]
-  local h = open and 262 or 44
+  local h = open and 270 or 52
   ui.dummy(vec2(w, h))
-  ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.045), 7)
-  if open then ui.drawRectFilled(p, vec2(p.x + 3, p.y + h), withA(pick[id], 1), 2) end
-  ui.setCursor(vec2(p.x + 10, p.y + 8))
-  if nlToggle(label, enabled[id], 200) then enabled[id] = not enabled[id]; pushEditor() end
-  local chip = enabled[id] and pick[id] or rgbm(1, 1, 1, 0.1)
-  ui.drawCircleFilled(vec2(p.x + w - 24, p.y + 22), 11, chip, 24)
-  ui.drawCircle(vec2(p.x + w - 24, p.y + 22), 11, rgbm(1, 1, 1, 0.2), 24, 1)
-  if not enabled[id] then text('off - stock colour', 9, vec2(p.x + 230, p.y + 15), DIM) end
   if open then
-    ui.setCursor(vec2(p.x + 10, p.y + 44))
-    swatchRow(id)
-    ui.setCursor(vec2(p.x + 10, p.y + 84))
+    hgrad(p, p + vec2(w, h), withA(BLUE, 0.18), rgbm(0, 0, 0, 0.5), 12)
+    ui.drawRect(p, p + vec2(w, h), withA(BLUE, 0.6), 12, ui.CornerFlags.All, 1)
+  else
+    ui.drawRectFilled(p, p + vec2(w, h), rgbm(0, 0, 0, 0.5), 12)
+    ui.drawRect(p, p + vec2(w, h), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
+  end
+  ui.drawRectFilled(vec2(p.x + 10, p.y + 10), vec2(p.x + 42, p.y + 42), withA(BLUE, open and 0.35 or 0.15), 8)
+  icon(ic, vec2(p.x + 18, p.y + 18), 16, open and rgbm(1, 1, 1, 1) or BLUE)
+  text(label:upper(), 12, vec2(p.x + 52, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
+  text(open and 'ON' or 'OFF - STOCK COLOUR', 7, vec2(p.x + 52, p.y + 30), open and BLUE or DIM, F_BOLD)
+  -- toggle on the right + colour chip
+  ui.setCursor(vec2(p.x + w - 118, p.y + 10))
+  if nlToggle('##' .. id, enabled[id], 60) then enabled[id] = not enabled[id]; pushEditor() end
+  local chip = enabled[id] and pick[id] or rgbm(1, 1, 1, 0.08)
+  ui.drawCircleFilled(vec2(p.x + w - 28, p.y + 26), 13, chip, 24)
+  ui.drawCircle(vec2(p.x + w - 28, p.y + 26), 13, rgbm(1, 1, 1, 0.25), 24, 1)
+  if open then
+    swatchRow(id, p.x + 12, p.y + 60)
+    ui.setCursor(vec2(p.x + 12, p.y + 102))
     ui.setNextItemWidth(200)
     if ui.colorPicker('##pk' .. id, pick[id], bit.bor(ui.ColorPickerFlags.NoAlpha, ui.ColorPickerFlags.PickerHueBar, ui.ColorPickerFlags.NoSidePreview)) then pushEditor() end
   end
-  ui.setCursor(vec2(p.x, p.y + h + 8))
+  ui.setCursor(vec2(p.x, p.y + h + 10))
   ui.popID()
 end
 
-function finishButtons(w)
+function finishButtons()
+  local w = 580
   local p = ui.getCursor()
-  ui.dummy(vec2(w, 54))
-  ui.drawRectFilled(p, p + vec2(w, 54), rgbm(1, 1, 1, 0.045), 7)
-  text('FINISH', 9, vec2(p.x + 12, p.y + 8), rgbm(0.75, 0.77, 0.82, 1), F_BOLD)
+  ui.dummy(vec2(w, 60))
+  ui.drawRectFilled(p, p + vec2(w, 60), rgbm(0, 0, 0, 0.5), 12)
+  ui.drawRect(p, p + vec2(w, 60), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
+  text('FINISH', 10, vec2(p.x + 14, p.y + 22), rgbm(0.82, 0.84, 0.88, 1), F_BOLD)
   local x = p.x + 80
   for i, f in ipairs(FINISHES) do
-    ui.setCursor(vec2(x, p.y + 13))
+    ui.setCursor(vec2(x, p.y + 14))
     local sel = (build.finish or 0) == i - 1
-    if nlButton(f, 100, sel and GREEN or nil) then build.finish = i - 1; pushEditor() end
-    -- little sphere preview
-    local cx, cy = x + 100 - 14, p.y + 27
-    local base = enabled.body and pick.body or rgbm(0.5, 0.5, 0.55, 1)
-    ui.drawCircleFilled(vec2(cx, cy), 7, sel and rgbm(0.04, 0.04, 0.05, 1) or base, 16)
-    if i ~= 2 then ui.drawCircleFilled(vec2(cx - 2, cy - 2), i == 4 and 3.5 or 2, rgbm(1, 1, 1, i == 4 and 1 or (i == 3 and 0.5 or 0.8)), 10) end
-    x = x + 112
+    if nlButton(f, 112, sel and BLUE or nil, 32) then build.finish = i - 1; pushEditor() end
+    x = x + 120
   end
-  ui.setCursor(vec2(p.x, p.y + 62))
+  ui.setCursor(vec2(p.x, p.y + 70))
 end
 
 function tabPaint()
-  ui.childWindow('##paint', vec2(600, 400), false, 0, function()
-    colourBlock('body', 'Body paint')
-    if enabled.body then finishButtons(580) end
-    colourBlock('rims', 'Wheels')
-    colourBlock('calipers', 'Calipers')
+  ui.childWindow('##paint', vec2(600, 440), false, 0, function()
+    pushKitStyle()
+    colourBlock('body', 'Body paint', 'paint')
+    if enabled.body then finishButtons() end
+    colourBlock('rims', 'Wheels', 'wheel')
+    colourBlock('calipers', 'Calipers', 'brake')
+    popKitStyle()
   end)
 end
 
 function tabInterior()
-  ui.childWindow('##int', vec2(600, 400), false, 0, function()
-    colourBlock('leather', 'Leather / alcantara')
-    colourBlock('accent', 'Trim accents')
-    text('Not every car has recolourable accents. Save tab shows what was found on this car.', 9, ui.getCursor() + vec2(4, 0), DIM)
+  ui.childWindow('##int', vec2(600, 440), false, 0, function()
+    pushKitStyle()
+    colourBlock('leather', 'Leather / alcantara', 'interior')
+    colourBlock('accent', 'Trim accents', 'drop')
+    text('Not every car has recolourable accents. The Save tab shows what was found on this car.', 9, ui.getCursor() + vec2(4, 0), DIM)
     ui.dummy(vec2(1, 14))
+    popKitStyle()
   end)
 end
 
 function tabPlate()
-  section('registration (up to 10 characters)')
-  ui.setNextItemWidth(300)
-  local v, changed = ui.inputText('##plate', plateText, ui.InputTextFlags.CharsUppercase)
-  if changed then plateText = v:sub(1, 10); pushEditor() end
-  ui.sameLine(0, 8)
-  if nlButton('Stock plate', 110) then plateText = ''; build.platestyle = 0; pushEditor() end
-  section('style')
-  for i, st in ipairs(PLATE_STYLES) do
-    if nlButton(st, 120, (build.platestyle or 0) == i - 1 and GREEN or nil) then build.platestyle = i - 1; pushEditor() end
-    if i < #PLATE_STYLES then ui.sameLine(0, 6) end
-  end
-  section('preview')
+  pushKitStyle()
+  section('registration  (up to 10 characters)', BLUE, 'plate')
   local p = ui.getCursor()
-  ui.dummy(vec2(400, 100))
-  pcall(function() drawUKPlate(p.x, p.y, 400, 100, plateText, YELLOW, build.platestyle or 0) end)
-  ui.drawRect(p, p + vec2(400, 100), rgbm(1, 1, 1, 0.15), 3, ui.CornerFlags.All, 1)
-  text('Shows on the front and rear plate. Everyone on the server sees it.', 9, ui.getCursor() + vec2(4, 2), DIM)
-  ui.dummy(vec2(1, 14))
+  pill(p, 300, 32, false, 0)
+  ui.setCursor(vec2(p.x + 12, p.y + 5))
+  ui.setNextItemWidth(276)
+  pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+  local v, changed = ui.inputText('##plate', plateText, ui.InputTextFlags.CharsUppercase)
+  pcall(function() ui.popStyleColor() end)
+  if changed then plateText = v:sub(1, 10); pushEditor() end
+  ui.setCursor(vec2(p.x + 310, p.y))
+  if nlButton('Stock plate', 130, nil, 32, 'reset') then plateText = ''; build.platestyle = 0; pushEditor() end
+  section('style', BLUE, 'looks')
+  for i, st in ipairs(PLATE_STYLES) do
+    if nlButton(st, 130, (build.platestyle or 0) == i - 1 and BLUE or nil, 32) then build.platestyle = i - 1; pushEditor() end
+    if i < #PLATE_STYLES then ui.sameLine(0, 8) end
+  end
+  section('preview', BLUE, 'eye')
+  p = ui.getCursor()
+  ui.dummy(vec2(580, 150))
+  ui.drawRectFilled(p, p + vec2(580, 150), rgbm(0, 0, 0, 0.5), 12)
+  ui.drawRect(p, p + vec2(580, 150), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
+  pcall(function() drawUKPlate(p.x + 90, p.y + 25, 400, 100, plateText, YELLOW, build.platestyle or 0) end)
+  ui.drawRect(vec2(p.x + 90, p.y + 25), vec2(p.x + 490, p.y + 125), rgbm(1, 1, 1, 0.15), 3, ui.CornerFlags.All, 1)
+  text('FRONT AND REAR. EVERYONE ON THE SERVER SEES IT.', 8, ui.getCursor() + vec2(4, 4), DIM, F_BOLD)
+  ui.dummy(vec2(1, 16))
+  popKitStyle()
 end
 
 function tabGlow()
-  ui.childWindow('##glow', vec2(600, 400), false, 0, function()
+  ui.childWindow('##glow', vec2(600, 440), false, 0, function()
+    pushKitStyle()
     local p = ui.getCursor()
     local open = enabled.glow
-    local h = open and 320 or 44
+    local h = open and 330 or 52
     ui.dummy(vec2(580, h))
-    ui.drawRectFilled(p, p + vec2(580, h), rgbm(1, 1, 1, 0.045), 7)
-    ui.setCursor(vec2(p.x + 10, p.y + 8))
-    if nlToggle('Underglow', enabled.glow, 200) then enabled.glow = not enabled.glow; pushEditor() end
+    if open then hgrad(p, p + vec2(580, h), withA(BLUE, 0.18), rgbm(0, 0, 0, 0.5), 12); ui.drawRect(p, p + vec2(580, h), withA(BLUE, 0.6), 12, ui.CornerFlags.All, 1)
+    else ui.drawRectFilled(p, p + vec2(580, h), rgbm(0, 0, 0, 0.5), 12); ui.drawRect(p, p + vec2(580, h), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1) end
+    ui.drawRectFilled(vec2(p.x + 10, p.y + 10), vec2(p.x + 42, p.y + 42), withA(BLUE, open and 0.35 or 0.15), 8)
+    icon('glow', vec2(p.x + 18, p.y + 18), 16, open and rgbm(1, 1, 1, 1) or BLUE)
+    text('UNDERGLOW', 12, vec2(p.x + 52, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
+    text(open and 'ON' or 'OFF', 7, vec2(p.x + 52, p.y + 30), open and BLUE or DIM, F_BOLD)
+    ui.setCursor(vec2(p.x + 580 - 118, p.y + 10))
+    if nlToggle('##glow', enabled.glow, 60) then enabled.glow = not enabled.glow; pushEditor() end
     if open then
-      -- preview strip: the colour (or the rainbow) glowing under a dark bar
       local gc = pick.glow
       if build.rgbcycle then local r, g, b = hsv(hueT % 1); gc = rgbm(r, g, b, 1) end
-      pcall(function() ui.drawRectFilledMultiColor(vec2(p.x + 20, p.y + 44), vec2(p.x + 560, p.y + 64), withA(gc, 0.0), withA(gc, 0.0), withA(gc, 0.9 * (build.glowpower or 0.6)), withA(gc, 0.9 * (build.glowpower or 0.6))) end)
-      ui.drawRectFilled(vec2(p.x + 60, p.y + 38), vec2(p.x + 520, p.y + 50), rgbm(0.08, 0.08, 0.1, 1), 4)
-      ui.setCursor(vec2(p.x + 10, p.y + 76))
-      swatchRow('glow')
-      ui.setCursor(vec2(p.x + 10, p.y + 116))
+      -- preview strip
+      pcall(function() ui.drawRectFilledMultiColor(vec2(p.x + 20, p.y + 56), vec2(p.x + 560, p.y + 78), withA(gc, 0.0), withA(gc, 0.0), withA(gc, 0.9 * (build.glowpower or 0.6)), withA(gc, 0.9 * (build.glowpower or 0.6))) end)
+      ui.drawRectFilled(vec2(p.x + 60, p.y + 50), vec2(p.x + 520, p.y + 62), rgbm(0.08, 0.08, 0.1, 1), 4)
+      swatchRow('glow', p.x + 12, p.y + 90)
+      ui.setCursor(vec2(p.x + 12, p.y + 132))
       ui.setNextItemWidth(200)
       if ui.colorPicker('##pkglow', pick.glow, bit.bor(ui.ColorPickerFlags.NoAlpha, ui.ColorPickerFlags.PickerHueBar, ui.ColorPickerFlags.NoSidePreview)) then pushEditor() end
-      ui.setCursor(vec2(p.x + 240, p.y + 120))
-      ui.setNextItemWidth(300)
+      ui.setCursor(vec2(p.x + 240, p.y + 136))
+      ui.setNextItemWidth(320)
       local v, ch = ui.slider('##gp', build.glowpower or 0.6, 0.1, 1.0, 'Brightness: %.2f')
       if ch then build.glowpower = v; pushEditor() end
-      ui.setCursor(vec2(p.x + 240, p.y + 156))
+      ui.setCursor(vec2(p.x + 240, p.y + 176))
       if nlToggle('RGB cycle', build.rgbcycle == true, 150) then build.rgbcycle = not build.rgbcycle; pushEditor() end
-      ui.setCursor(vec2(p.x + 240, p.y + 190))
-      if nlToggle('Flash red on brake', build.brakeflash == true, 190) then build.brakeflash = not build.brakeflash; pushEditor() end
+      ui.setCursor(vec2(p.x + 240, p.y + 216))
+      if nlToggle('Flash red on brake', build.brakeflash == true, 210) then build.brakeflash = not build.brakeflash; pushEditor() end
     end
-    ui.setCursor(vec2(p.x, p.y + h + 8))
+    ui.setCursor(vec2(p.x, p.y + h + 10))
+    popKitStyle()
   end)
 end
 
 function tabLooks()
-  section('one click builds. tweak after in paint.')
-  ui.childWindow('##looks', vec2(600, 360), false, 0, function()
+  section('one click builds. tweak after in paint.', BLUE, 'looks')
+  ui.childWindow('##looks', vec2(600, 400), false, 0, function()
     for i, L in ipairs(LOOKS) do
       local p = ui.getCursor()
-      ui.invisibleButton('##look' .. i, vec2(138, 64))
+      ui.invisibleButton('##look' .. i, vec2(186, 118))
       local hov = ui.itemHovered()
-      if ui.itemClicked(ui.MouseButton.Left) then applyLook(L) end
       local f = ease('look' .. i, hov and 1 or 0)
-      ui.drawRectFilled(p, p + vec2(138, 64), rgbm(1, 1, 1, 0.05 + 0.08 * f), 7)
-      ui.drawRect(p, p + vec2(138, 64), rgbm(1, 1, 1, 0.06 + 0.4 * f), 7, ui.CornerFlags.All, 1)
-      ui.drawRectFilled(vec2(p.x + 8, p.y + 8), vec2(p.x + 52, p.y + 56), rgbm(L.body[1], L.body[2], L.body[3], 1), 5)
-      if L.finish == 3 then ui.drawCircleFilled(vec2(p.x + 20, p.y + 20), 5, rgbm(1, 1, 1, 0.9), 10) elseif L.finish == 0 then ui.drawCircleFilled(vec2(p.x + 20, p.y + 20), 3, rgbm(1, 1, 1, 0.6), 10) end
-      local cx = p.x + 60
-      for _, key in ipairs({ 'rims', 'calipers', 'glow' }) do
+      ui.drawRectFilled(p, p + vec2(186, 118), rgbm(0, 0, 0, 0.5 + 0.15 * f), 12)
+      ui.drawRect(p, p + vec2(186, 118), lerpC(rgbm(0.016, 0.012, 0.024, 0.72), rgbm(0.5, 0.5, 0.52, 0.9), f), 12, ui.CornerFlags.All, 1)
+      -- preview: paint block with chips
+      ui.drawRectFilled(vec2(p.x + 8, p.y + 8), vec2(p.x + 178, p.y + 52), rgbm(L.body[1], L.body[2], L.body[3], 1), 6)
+      if L.finish == 3 then ui.drawCircleFilled(vec2(p.x + 24, p.y + 22), 6, rgbm(1, 1, 1, 0.9), 12) elseif L.finish == 0 then ui.drawCircleFilled(vec2(p.x + 24, p.y + 22), 4, rgbm(1, 1, 1, 0.6), 12) end
+      local cx = p.x + 150
+      for _, key in ipairs({ 'glow', 'calipers', 'rims' }) do
         local c = L[key]
-        ui.drawCircleFilled(vec2(cx + 6, p.y + 48), 6, c and rgbm(c[1], c[2], c[3], 1) or rgbm(1, 1, 1, 0.08), 12)
-        cx = cx + 16
+        ui.drawCircleFilled(vec2(cx, p.y + 42), 6, c and rgbm(c[1], c[2], c[3], 1) or rgbm(1, 1, 1, 0.1), 12)
+        ui.drawCircle(vec2(cx, p.y + 42), 6, rgbm(0, 0, 0, 0.5), 12, 1)
+        cx = cx - 16
       end
-      text(L.name, 12, vec2(p.x + 60, p.y + 10), rgbm(1, 1, 1, 1), F_BOLD)
-      text(FINISHES[(L.finish or 0) + 1], 8, vec2(p.x + 60, p.y + 27), DIM)
-      if i % 4 ~= 0 and i < #LOOKS then ui.sameLine(0, 8) else ui.dummy(vec2(1, 6)) end
+      text('LOOK', 7, vec2(p.x + 10, p.y + 58), DIM, F_BOLD)
+      text(L.name, 11, vec2(p.x + 10, p.y + 69), rgbm(1, 1, 1, 1), F_BOLD)
+      text(FINISHES[(L.finish or 0) + 1]:upper(), 7, vec2(p.x + 120, p.y + 71), DIM, F_BOLD)
+      ui.setCursor(vec2(p.x + 10, p.y + 88))
+      if nlButton('Apply##' .. i, 166, nil, 22) or (ui.itemClicked(ui.MouseButton.Left) and false) then applyLook(L) end
+      ui.setCursor(vec2(p.x, p.y + 118))
+      if i % 3 ~= 0 and i < #LOOKS then ui.setCursor(vec2(p.x + 196, p.y)) else ui.dummy(vec2(1, 10)) end
     end
   end)
 end
 
 function simpleSlider(key, label, left, right)
-  ui.setNextItemWidth(560)
+  ui.setNextItemWidth(576)
   local v, changed = ui.slider('##' .. key, tune.simple[key], 0, 1, label .. ': %.2f')
   if changed then tune.simple[key] = v; tune.presetName = '' end
   local p = ui.getCursor()
-  text(left, 8, vec2(p.x + 2, p.y - 2), DIM)
-  local rw = textW(right, 8).x
-  text(right, 8, vec2(p.x + 560 - rw - 2, p.y - 2), DIM)
+  text(left:upper(), 7, vec2(p.x + 2, p.y - 2), DIM, F_BOLD)
+  local rw = textW(right:upper(), 7, F_BOLD).x
+  text(right:upper(), 7, vec2(p.x + 576 - rw - 2, p.y - 2), DIM, F_BOLD)
   ui.dummy(vec2(1, 10))
   return changed
 end
 
 function tabTune()
-  ui.childWindow('##tune', vec2(600, 400), false, 0, function()
-    if canEdit() then text('IN THE PITS - changes apply straight away', 9, ui.getCursor(), GREEN, F_BOLD)
-    else text('Changes queue up and apply when you are in the pits with the setup screen open', 9, ui.getCursor(), WARN, F_BOLD) end
-    ui.dummy(vec2(1, 14))
-    section('presets')
+  ui.childWindow('##tune', vec2(600, 440), false, 0, function()
+    pushKitStyle()
+    local p = ui.getCursor()
+    ui.dummy(vec2(576, 30))
+    local ok = canEdit()
+    hgrad(p, p + vec2(576, 30), withA(ok and GREEN or GOLD, 0.3), rgbm(0, 0, 0, 0), 12)
+    icon(ok and 'check' or 'info', vec2(p.x + 10, p.y + 8), 14, ok and GREEN or GOLD)
+    text(ok and 'IN THE PITS - CHANGES APPLY STRAIGHT AWAY' or 'CHANGES QUEUE UP AND APPLY WHEN YOU ARE IN THE PITS WITH THE SETUP SCREEN OPEN', 9, vec2(p.x + 30, p.y + 10), rgbm(1, 1, 1, 0.9), F_BOLD)
+    section('presets', BLUE, 'tune')
     for i, pr in ipairs(PRESETS) do
-      local p = ui.getCursor()
-      ui.invisibleButton('##pre' .. i, vec2(138, 56))
+      local q = ui.getCursor()
+      ui.invisibleButton('##pre' .. i, vec2(138, 70))
       local hov = ui.itemHovered()
       if ui.itemClicked(ui.MouseButton.Left) then applyPreset(pr) end
       local sel = tune.presetName == pr.name
       local f = ease('pre' .. i, hov and 1 or 0)
-      ui.drawRectFilled(p, p + vec2(138, 56), sel and withA(GREEN, 0.18) or rgbm(1, 1, 1, 0.05 + 0.08 * f), 7)
-      ui.drawRect(p, p + vec2(138, 56), sel and GREEN or rgbm(1, 1, 1, 0.06 + 0.4 * f), 7, ui.CornerFlags.All, 1)
-      text(pr.name, 12, vec2(p.x + 10, p.y + 8), sel and GREEN or rgbm(1, 1, 1, 1), F_BOLD)
-      -- mini bars: stiff / diff / height
+      if sel then hgrad(q, q + vec2(138, 70), withA(BLUE, 0.55), withA(BLUE, 0.12), 12); ui.drawRect(q, q + vec2(138, 70), BLUE, 12, ui.CornerFlags.All, 1)
+      else ui.drawRectFilled(q, q + vec2(138, 70), rgbm(0, 0, 0, 0.5 + 0.15 * f), 12); ui.drawRect(q, q + vec2(138, 70), lerpC(rgbm(0.016, 0.012, 0.024, 0.72), rgbm(0.5, 0.5, 0.52, 0.9), f), 12, ui.CornerFlags.All, 1) end
+      text(pr.name:upper(), 11, vec2(q.x + 10, q.y + 9), rgbm(1, 1, 1, 1), F_BOLD)
       local sm = pr.simple
-      local bx = p.x + 10
+      local bx = q.x + 10
       for _, k in ipairs({ 'stiff', 'diff', 'height' }) do
-        ui.drawRectFilled(vec2(bx, p.y + 40), vec2(bx + 36, p.y + 44), rgbm(1, 1, 1, 0.1), 2)
-        ui.drawRectFilled(vec2(bx, p.y + 40), vec2(bx + 36 * sm[k], p.y + 44), sel and GREEN or rgbm(1, 1, 1, 0.5), 2)
+        ui.drawRectFilled(vec2(bx, q.y + 50), vec2(bx + 36, q.y + 54), rgbm(1, 1, 1, 0.1), 2)
+        ui.drawRectFilled(vec2(bx, q.y + 50), vec2(bx + 36 * sm[k], q.y + 54), sel and rgbm(1, 1, 1, 0.9) or BLUE, 2)
         bx = bx + 42
       end
-      text('stiff   diff   height', 6, vec2(p.x + 10, p.y + 28), DIM)
+      text('STIFF    DIFF    HEIGHT', 6, vec2(q.x + 10, q.y + 36), DIM, F_BOLD)
       if hov then ui.setTooltip(pr.blurb) end
-      if i % 4 ~= 0 and i < #PRESETS then ui.sameLine(0, 8) else ui.dummy(vec2(1, 4)) end
+      if i % 4 ~= 0 and i < #PRESETS then ui.sameLine(0, 8) else ui.dummy(vec2(1, 6)) end
     end
-    section('feel')
+    section('feel', BLUE, 'sliders')
     local ch = false
     ch = simpleSlider('balance', 'Balance', 'Oversteer / loose', 'Understeer / planted') or ch
     ch = simpleSlider('stiff', 'Stiffness', 'Soft, comfy', 'Stiff, sharp') or ch
@@ -1223,32 +1404,37 @@ function tabTune()
     ch = simpleSlider('pressure', 'Tyre pressure', 'Low, more grip', 'High, more slide') or ch
     ch = simpleSlider('height', 'Ride height', 'Slammed', 'Raised') or ch
     if ch then simpleDirty = true; simpleTimer = 0.6 end
-    section('save and share')
-    ui.setNextItemWidth(220)
+    section('save and share', BLUE, 'save')
+    local q = ui.getCursor()
+    pill(q, 220, 32, false, 0)
+    ui.setCursor(vec2(q.x + 12, q.y + 5))
+    ui.setNextItemWidth(196)
+    pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
     tune.saveName = ui.inputText('##tunename', tune.saveName)
+    pcall(function() ui.popStyleColor() end)
+    ui.setCursor(vec2(q.x + 228, q.y))
+    if nlButton('Save tune', 110, BLUE, 32, 'save') then saveTuneFile() end
     ui.sameLine(0, 6)
-    if nlButton('Save tune', 100, GREEN) then saveTuneFile() end
+    if nlButton('Copy tune', 110, nil, 32, 'copy') then exportTune() end
     ui.sameLine(0, 6)
-    if nlButton('Copy tune', 100) then exportTune() end
-    ui.sameLine(0, 6)
-    if nlButton('Import tune', 100) then importTune() end
-    text('Copied tunes are text. Paste them in Discord, friends import them with one click.', 9, ui.getCursor() + vec2(2, 0), DIM)
+    if nlButton('Import', 100, nil, 32, 'paste') then importTune() end
+    text('COPIED TUNES ARE TEXT. PASTE THEM IN DISCORD, FRIENDS IMPORT THEM WITH ONE CLICK.', 7, ui.getCursor() + vec2(2, 2), DIM, F_BOLD)
     ui.dummy(vec2(1, 14))
     ui.treeNode('Saved tunes', function()
       if tune.files == nil or #tune.files == 0 then ui.textColored('No saved tunes for this car yet.', DIM)
-      else for _, fn in ipairs(tune.files) do if nlButton(fn:gsub('%.ini$', ''), 540) then loadTuneFile(fn) end end end
-      if nlButton('Refresh list', 120) then refreshFiles() end
+      else for _, fn in ipairs(tune.files) do if nlButton(fn:gsub('%.ini$', ''), 560, nil, 28) then loadTuneFile(fn) end end end
+      if nlButton('Refresh list', 130, nil, 28) then refreshFiles() end
     end)
     ui.treeNode('Advanced (every setting)', function()
       if tune.spinners == nil or #tune.spinners == 0 then
         ui.textColored('Nothing here until the setup screen has been opened once.', DIM)
-        if nlButton('Scan now', 100) then scanSpinners() end
+        if nlButton('Scan now', 110, nil, 28) then scanSpinners() end
       else
         for _, sp in ipairs(tune.spinners) do
           if sp.visible ~= false then
             local label = (sp.label or sp.name) .. (sp.units and (' (' .. sp.units .. ')') or '')
             local pend = tune.pending[sp.name]
-            ui.setNextItemWidth(480)
+            ui.setNextItemWidth(500)
             local v, changed = ui.slider('##' .. sp.name, pend or sp.value, sp.min, sp.max, label .. ': %.0f', true)
             if changed then
               local step = (sp.step and sp.step > 0) and sp.step or 1
@@ -1261,76 +1447,77 @@ function tabTune()
         end
       end
     end)
+    popKitStyle()
   end)
 end
 
 function tabShowroom()
-  section('orbit camera for screenshots and clips')
+  pushKitStyle()
+  section('orbit camera for screenshots and clips', BLUE, 'showroom')
   if showroom.cam then
-    if nlButton('Stop', 110, GREEN) then showroomStop() end
-    ui.sameLine(0, 6)
-    if nlToggle('Auto orbit', showroom.auto, 130) then showroom.auto = not showroom.auto end
-    ui.setNextItemWidth(400)
-    showroom.angle = ui.slider('##ang', showroom.angle, 0, math.pi * 2, 'Angle: %.2f')
-    ui.setNextItemWidth(400)
-    showroom.speed = ui.slider('##spd', showroom.speed, 0.05, 1.5, 'Speed: %.2f')
-    ui.setNextItemWidth(400)
-    showroom.dist = ui.slider('##dst', showroom.dist, 3, 14, 'Distance: %.1f m')
-    ui.setNextItemWidth(400)
-    showroom.height = ui.slider('##hgt', showroom.height, 0.3, 4, 'Height: %.1f m')
-    ui.setNextItemWidth(400)
-    showroom.fov = ui.slider('##fov', showroom.fov, 20, 70, 'FOV: %.0f')
-    text('F8 takes a screenshot. Close this menu to watch it orbit.', 9, ui.getCursor() + vec2(2, 0), DIM)
+    if nlButton('Stop', 110, BLUE, 32, 'close') then showroomStop() end
+    ui.sameLine(0, 8)
+    if nlToggle('Auto orbit', showroom.auto, 150) then showroom.auto = not showroom.auto end
+    ui.dummy(vec2(1, 8))
+    ui.setNextItemWidth(420) showroom.angle = ui.slider('##ang', showroom.angle, 0, math.pi * 2, 'Angle: %.2f')
+    ui.setNextItemWidth(420) showroom.speed = ui.slider('##spd', showroom.speed, 0.05, 1.5, 'Speed: %.2f')
+    ui.setNextItemWidth(420) showroom.dist = ui.slider('##dst', showroom.dist, 3, 14, 'Distance: %.1f m')
+    ui.setNextItemWidth(420) showroom.height = ui.slider('##hgt', showroom.height, 0.3, 4, 'Height: %.1f m')
+    ui.setNextItemWidth(420) showroom.fov = ui.slider('##fov', showroom.fov, 20, 70, 'FOV: %.0f')
+    text('F8 TAKES A SCREENSHOT. CLOSE THIS MENU TO WATCH IT ORBIT.', 7, ui.getCursor() + vec2(2, 2), DIM, F_BOLD)
     ui.dummy(vec2(1, 14))
   else
-    if nlButton('Start showroom', 150, GREEN) then showroomStart() end
+    if nlButton('Start showroom', 170, BLUE, 32, 'showroom') then showroomStart() end
   end
+  popKitStyle()
 end
 
 function tabSave()
-  ui.childWindow('##save', vec2(600, 400), false, 0, function()
-    section('this build')
-    if nlButton('Save this build', 150, GREEN) then saveBuild() end
+  ui.childWindow('##save', vec2(600, 440), false, 0, function()
+    pushKitStyle()
+    section('this build', BLUE, 'save')
+    if nlButton('Save build', 130, BLUE, 32, 'save') then saveBuild() end
     ui.sameLine(0, 6)
-    if nlButton('Reset to stock', 130) then resetAll() end
+    if nlButton('Reset to stock', 150, nil, 32, 'reset') then resetAll() end
     ui.sameLine(0, 6)
-    if nlButton('Copy build code', 140) then exportCode() end
+    if nlButton('Copy code', 120, nil, 32, 'copy') then exportCode() end
     ui.sameLine(0, 6)
-    if nlButton('Import build code', 140) then importCode() end
-    text('Saved builds come back every time you drive this car. Build codes are text: paste them in Discord, friends import your exact look.', 9, ui.getCursor() + vec2(2, 0), DIM)
+    if nlButton('Import code', 130, nil, 32, 'paste') then importCode() end
+    text('SAVED BUILDS COME BACK EVERY TIME YOU DRIVE THIS CAR. BUILD CODES ARE TEXT: PASTE THEM IN DISCORD.', 7, ui.getCursor() + vec2(2, 2), DIM, F_BOLD)
     ui.dummy(vec2(1, 14))
-    section('sharing')
-    if nlToggle('Show my build to others', store.shareBuild, 260) then store.shareBuild = not store.shareBuild; dirty = true; dirtyTimer = 0.2 end
-    if nlToggle('Show other players\' builds', store.showOthers, 260) then
+    section('sharing', BLUE, 'players')
+    if nlToggle('Show my build to others', store.shareBuild, 300) then store.shareBuild = not store.shareBuild; dirty = true; dirtyTimer = 0.2 end
+    ui.dummy(vec2(1, 4))
+    if nlToggle('Show other players\' builds', store.showOthers, 300) then
       store.showOthers = not store.showOthers
       for i, b in pairs(remoteBuilds) do if store.showOthers then applyBuild(i, b) else resetCar(i) end end
     end
-    section('menu key')
+    section('menu key', BLUE, 'key')
     if menuButton then
-      local okc = pcall(function() menuButton:control(vec2(160, 24)) end)
+      local okc = pcall(function() menuButton:control(vec2(180, 28)) end)
       if not okc then ui.text('current key: ' .. MENU_KEY) end
     else
       ui.text('current key: ' .. MENU_KEY)
     end
-    section('found on this car')
+    section('found on this car', BLUE, 'car')
     for _, g in ipairs(GROUPS) do if scanReport[g.id] then text(scanReport[g.id], 9, ui.getCursor() + vec2(2, 0), DIM); ui.dummy(vec2(1, 13)) end end
-    if nlButton('Re-scan car', 110) then
+    if nlButton('Re-scan car', 130, nil, 32, 'search') then
       matCache = {}; rootCache = {}; stock = {}; plateApplied = {}; painted = {}
       for _, g in ipairs(GROUPS) do groupMeshes(0, g.id) end
       applyBuild(0, build)
       say('Re-scanned')
     end
+    popKitStyle()
   end)
 end
 
 function drawMenu()
     local W = 600
     local p = ui.getCursor()
-    ui.dummy(vec2(W, 12))
     if statusTimer > 0 then
-      local sw = textW(status, 9, F_BOLD).x
-      ui.drawRectFilled(vec2(p.x + W - sw - 16, p.y - 42), vec2(p.x + W, p.y - 24), withA(GREEN, 0.9), 4)
-      text(status, 9, vec2(p.x + W - sw - 8, p.y - 38), rgbm(0.04, 0.04, 0.05, 1), F_BOLD)
+      local sw = textW(status:upper(), 8, F_BOLD).x
+      ui.drawRectFilled(vec2(p.x + W - sw - 20, p.y - 44), vec2(p.x + W, p.y - 26), withA(BLUE, 0.9), 9)
+      text(status:upper(), 8, vec2(p.x + W - sw - 10, p.y - 40), rgbm(1, 1, 1, 1), F_BOLD)
     end
     nlTabs('c', { 'Paint', 'Interior', 'Plate', 'Glow', 'Looks', 'Tune', 'Showroom', 'Save' }, menuUI, W)
     local tabs = { tabPaint, tabInterior, tabPlate, tabGlow, tabLooks, tabTune, tabShowroom, tabSave }
@@ -1347,7 +1534,7 @@ pcall(function()
   menuButton = ac.ControlButton('NL_CUSTOMS_MENU', { keyboard = { key = ui.KeyIndex[MENU_KEY] or ui.KeyIndex.Insert } })
 end)
 
-local function menuKeyPressed()
+function menuKeyPressed()
   if menuButton then
     local ok, v = pcall(function() return menuButton:pressed() end)
     if ok then return v == true end
@@ -1356,44 +1543,17 @@ local function menuKeyPressed()
   return ok and v == true
 end
 
-function drawPanel(id, title, subtitle, w, h, accent, fn, onClose)
-  local sim = ac.getSim()
-  local f = ease('panel' .. id, 1, 10)
-  local sc = 0.96 + 0.04 * f
-  local pw, ph = w * sc, h * sc
-  local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
-  ui.transparentWindow('nlc_' .. id, vec2(px - 20, py - 20), vec2(pw + 40, ph + 40), true, true, function()
-    local o = vec2(20, 20)
-    ui.drawRectFilled(o + vec2(6, 12), o + vec2(pw + 6, ph + 12), rgbm(0, 0, 0, 0.45 * f), 14)
-    ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.055, 0.06, 0.075, 0.97 * f), 12)
-    pcall(function() ui.drawRectFilledMultiColor(o, o + vec2(pw, 70), withA(accent, 0.25 * f), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(accent, 0.04 * f)) end)
-    ui.drawRect(o + vec2(0.5, 0.5), o + vec2(pw - 0.5, ph - 0.5), rgbm(1, 1, 1, 0.09 * f), 12, ui.CornerFlags.All, 1)
-    ui.drawRectFilled(o + vec2(12, 0), o + vec2(pw - 12, 2), withA(accent, 0.8 * f), 1)
-    text(title, 18, o + vec2(18, 14), rgbm(1, 1, 1, f), F_BOLD)
-    if subtitle then text(subtitle, 9, o + vec2(18, 38), withA(DIM, f), F_BOLD) end
-    ui.setCursor(o + vec2(pw - 40, 12))
-    ui.invisibleButton('##close' .. id, vec2(28, 28))
-    local hov = ui.itemHovered()
-    local hf = ease('close' .. id, hov and 1 or 0)
-    ui.drawCircleFilled(o + vec2(pw - 26, 26), 13, rgbm(1, 1, 1, 0.06 + 0.12 * hf), 20)
-    text('x', 13, o + vec2(pw - 30, 17), rgbm(1, 1, 1, 0.6 + 0.4 * hf), F_BOLD)
-    if ui.itemClicked(ui.MouseButton.Left) then onClose() end
-    ui.setCursor(o + vec2(18, 56))
-    fn()
-  end)
-end
-
-local function openMenu()
+function openMenu()
   menu.open = not menu.open
   if menu.open then anim['panelmain'] = 0 end
 end
 
-local drawErr = nil
+drawErr = nil
 function script.drawUI(dt)
   if not started then return end
   if menuKeyPressed() then openMenu() end
   if menu.open then
-    local okm, errm = pcall(drawPanel, 'main', 'NO LICENSE CUSTOMS', myCarID .. '   -   press ' .. MENU_KEY:upper() .. ' to close', 640, 620, enabled.body and pick.body or GREEN, drawMenu, function() menu.open = false end)
+    local okm, errm = pcall(drawPanel, 'cmain', 'No License Customs', myCarID, 644, 660, BLUE, drawMenu, function() menu.open = false end, 'paint', MENU_KEY)
     if not okm and drawErr ~= tostring(errm) then drawErr = tostring(errm); dlog('menu error: ' .. drawErr) end
   end
   if menu.hintT > 0 then
