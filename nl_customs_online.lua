@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.7'
+local VERSION = '2.8'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -121,6 +121,25 @@ local CARS = {
   },
 }
 
+-- where the plate lives on each car's texture (uv band), the texture proportions and the plate's real-world
+-- width/height. Measured from the KN5s, so the plate art is never squashed.
+local PLATES = {
+  nolicense_bmw_m3_g80 = { material = 'licenseplate_US', rect = { 0.223, 0.014, 0.769, 0.243 }, size = { 2048, 2048 }, aspect = 2.38 },
+  nolicense_bmw_x5m_f95 = { material = 'licenseplate_US_emission', rect = { 0.227, 0.489, 0.772, 0.718 }, size = { 2048, 2048 }, aspect = 2.38 },
+  nolicense_c63_23 = { material = 'EXT_LP_US', rect = { 0.225, 0.492, 0.770, 0.721 }, size = { 2048, 2048 }, aspect = 2.38 },
+  nolicense_clk55_amgkitturbo = { material = 'Material #25ggre', rect = { 0.003, 0.000, 0.995, 1.000 }, size = { 512, 128 }, aspect = 3.98 },
+  nolicense_ford_mustang_gt350 = { material = 'vehicle_genericmud_car', rect = { 0.001, 0.001, 0.999, 0.999 }, size = { 1340, 754 }, aspect = 2.10 },
+  nolicense_g82_comp_coupe = { material = 'EXT_PLATE', rect = { 0.001, 0.001, 0.999, 0.999 }, size = { 1340, 754 }, aspect = 2.00 },
+  nolicense_jeep_trackhawk = { material = 'vehicle_genericmud_car', rect = { 0.001, 0.001, 0.999, 0.999 }, size = { 1024, 256 }, aspect = 2.00 },
+  nolicense_mercedes_a45_brabus = { material = 'PlateNM', rect = { 0.003, 0.000, 0.995, 1.000 }, size = { 1024, 256 }, aspect = 4.55 },
+  nolicense_porsche_gt3rs = { material = 'EXT_PLATE_plastic', rect = { 0.003, 0.000, 0.995, 1.000 }, size = { 512, 128 }, aspect = 4.55 },
+  nolicense_realistic_bmw_m340i_g20_chris = { material = 'chris_plate', rect = { 0.000, 0.259, 1.000, 0.804 }, size = { 2048, 2048 }, aspect = 2.00 },
+  nolicense_realistic_mercedes_e63_w213 = { material = 'EXT_LP_US', rect = { 0.225, 0.492, 0.770, 0.721 }, size = { 2048, 2048 }, aspect = 2.38 },
+  nolicense_rr_cullinan = { material = 'plate', rect = { 0.003, 0.000, 0.995, 1.000 }, size = { 1024, 256 }, aspect = 4.42 },
+  nolicense_tesla_model3_24 = { material = 'EXT_PLATE', rect = { 0.003, 0.000, 0.995, 1.000 }, size = { 512, 128 }, aspect = 4.46 },
+  nolicense_volkswagen_golf_r_mk8 = { material = 'EXT_LP_US', rect = { 0.004, 0.008, 1.000, 0.992 }, size = { 1125, 478 }, aspect = 2.38 },
+}
+
 local SHEET_RECTS = {
   { 455 / 2048, 80 / 2048, 1125 / 2048, 381 / 2048 },
   { 455 / 2048, 508 / 2048, 1125 / 2048, 479 / 2048 },
@@ -143,7 +162,7 @@ local FINISHES = { 'Gloss', 'Matte', 'Satin', 'Chrome' }
 local store = ac.storage { builds = '{}', shareBuild = true, showOthers = true, tunes = '{}' }
 
 local function defaultBuild()
-  return { v = 2, body = nil, rims = nil, calipers = nil, leather = nil, accent = nil, finish = 0, plate = '', platestyle = 0, glow = nil, rgbcycle = false, brakeflash = false, glowpower = 0.6 }
+  return { v = 2, body = nil, rims = nil, calipers = nil, leather = nil, accent = nil, finish = 0, plate = '', platestyle = 0, glow = nil, rgbcycle = false, brakeflash = false, glowpower = 0.6, flame = 0, flamepow = 1.0 }
 end
 
 local status, statusTimer = '', 0
@@ -356,48 +375,75 @@ local function drawUKPlate(x, y, w, h, text, bg, style)
 end
 
 local plateApplied = {}
+local plateCanvas = {}
+local function plateSpec(index)
+  local id = ac.getCarID(index) or ''
+  local pc = PLATES[id]
+  if pc then return pc end
+  local cfg = CARS[id]
+  if cfg and cfg.plate then
+    if cfg.plate.sheet then return { material = cfg.plate.material, rect = SHEET_RECTS[3], size = { 2048, 2048 }, aspect = 2.38, sheetRect = true } end
+    return { material = cfg.plate.material, rect = { 0, 0, 1, 1 }, size = { 1024, math.floor(1024 / (cfg.plate.aspect or 4)) }, aspect = cfg.plate.aspect or 4 }
+  end
+  return nil
+end
+
 local function applyPlate(index, text, force, style)
   text = text or ''
   style = style or 0
   local key = text .. '#' .. tostring(style)
   if not force and plateApplied[index] == key then return end
-  local cfg = CARS[ac.getCarID(index) or '']
   local root = carRoot(index)
   if not root then return end
-  local ref = nil
-  if cfg and cfg.plate then ref = findByMaterial(root, cfg.plate.material) end
+  local pc = plateSpec(index)
+  local ref = pc and findByMaterial(root, pc.material) or nil
   if not ref then
     ref = findByMaterial(root, '?plate?') or findByMaterial(root, '?Plate?') or findByMaterial(root, '?PLATE?')
     if not ref then return end
-    cfg = { plate = { aspect = 4.0 } }
+    pc = { rect = { 0, 0, 1, 1 }, size = { 1024, 256 }, aspect = 4.0 }
   end
-  local sheet = cfg.plate.sheet
-  local size = sheet and vec2(2048, 2048) or vec2(1024, math.floor(1024 / (cfg.plate.aspect or 4.0)))
+  -- canvas keeps the texture's proportions (so the uv band lands in the right place), capped at 1024 wide
+  local sw, sh = pc.size[1], pc.size[2]
+  local scale = math.min(1, 1024 / sw)
+  local size = vec2(math.floor(sw * scale), math.floor(sh * scale))
+  local r = pc.rect
+  local x0, y0 = r[1] * size.x, r[2] * size.y
+  local x1, y1 = r[3] * size.x, r[4] * size.y
+  if pc.sheetRect then x0, y0, x1, y1 = r[1] * size.x, r[2] * size.y, (r[1] + r[3]) * size.x, (r[2] + r[4]) * size.y end
+  local bg = YELLOW
+  -- draw the plate at its real proportions on a side canvas, then stretch that into the band
+  local cw, ch = math.floor(512 * (pc.aspect or 4)), 512
+  local side = nil
+  pcall(function()
+    local pcv = plateCanvas[index]
+    if pcv and (pcv.w ~= cw) then pcall(function() pcv.c:dispose() end); pcv = nil end
+    if not pcv then pcv = { w = cw, c = ui.ExtraCanvas(vec2(cw, ch)) }; plateCanvas[index] = pcv end
+    pcv.c:update(function() drawUKPlate(0, 0, cw, ch, text, bg, style) end)
+    side = pcv.c
+  end)
   local ok, err = pcall(function()
     ref:ensureUniqueMaterials()
     ref:setMaterialTexture('txDiffuse', {
       textureSize = size,
-      background = rgbm(0, 0, 0, 1),
+      background = rgbm(0.05, 0.05, 0.05, 1),
       callback = function()
-        if sheet then
-          for i, r in ipairs(SHEET_RECTS) do
-            drawUKPlate(r[1] * size.x, r[2] * size.y, r[3] * size.x, r[4] * size.y, text, (i == 2 or i == 3) and YELLOW or rgbm(0.96, 0.96, 0.96, 1), style)
-          end
-        else
-          drawUKPlate(0, 0, size.x, size.y, text, YELLOW, style)
-        end
+        local drawn = false
+        if side then drawn = pcall(function() ui.drawImage(side, vec2(x0, y0), vec2(x1, y1)) end) end
+        if not drawn then drawUKPlate(x0, y0, x1 - x0, y1 - y0, text, bg, style) end
       end,
     })
+    -- flat normal so no old embossed text shows through
+    pcall(function() ref:setMaterialTexture('txNormal', rgbm(0.5, 0.5, 1, 1)) end)
   end)
   if ok then plateApplied[index] = key else dlog('plate: ' .. tostring(err)) end
 end
 
 local function resetPlate(index)
   if not plateApplied[index] then return end
-  local cfg = CARS[ac.getCarID(index) or '']
   local root = carRoot(index)
   if not root then return end
-  local ref = cfg and cfg.plate and findByMaterial(root, cfg.plate.material) or nil
+  local pc = plateSpec(index)
+  local ref = pc and findByMaterial(root, pc.material) or nil
   if ref then pcall(function() ref:resetSkin() end) end
   plateApplied[index] = nil
 end
@@ -471,6 +517,100 @@ local function updateGlow(dt)
   end
 end
 
+------------------------------------------------------------------ exhaust flames
+
+-- exhaust positions (car space, from each car's flames.ini) so coloured flames come out of the actual pipes
+local EXHAUSTS = {
+  nolicense_bmw_m3_g80 = { { 0.265, 0.335, -2.210, 0.00, 0.00, -1.00 }, { 0.385, 0.335, -2.210, 0.00, 0.00, -1.00 }, { -0.389, 0.335, -2.210, 0.00, 0.00, -1.00 }, { -0.270, 0.335, -2.210, 0.00, 0.00, -1.00 } },
+  nolicense_bmw_x5m_f95 = { { 0.712, 0.405, -2.311, 0.00, -0.02, -1.00 }, { 0.598, 0.404, -2.374, 0.00, -0.04, -1.00 }, { -0.712, 0.405, -2.311, 0.00, -0.02, -1.00 }, { -0.598, 0.404, -2.374, 0.00, -0.04, -1.00 } },
+  nolicense_c63_23 = { { -0.484, 0.314, -2.300, 0.01, 0.00, -1.00 }, { -0.599, 0.310, -2.250, 0.01, 0.00, -1.00 }, { 0.484, 0.314, -2.300, 0.01, 0.00, -1.00 }, { 0.599, 0.310, -2.250, 0.01, 0.00, -1.00 } },
+  nolicense_clk55_amgkitturbo = { { -0.400, -0.080, -2.200, 0.00, 0.00, -1.00 }, { -0.520, -0.080, -2.200, 0.00, 0.00, -1.00 } },
+  nolicense_ford_mustang_gt350 = { { 0.261, 0.684, -2.234, 0.14, 0.48, -0.87 }, { -0.261, 0.684, -2.234, -0.14, 0.48, -0.87 } },
+  nolicense_g82_comp_coupe = { { 0.516, 0.341, -2.347, -0.03, 0.13, -0.99 }, { 0.398, 0.352, -2.387, -0.01, 0.14, -0.99 }, { -0.516, 0.341, -2.347, -0.03, 0.13, -0.99 }, { -0.398, 0.352, -2.387, -0.01, 0.14, -0.99 } },
+  nolicense_jeep_trackhawk = { { 0.576, 0.410, -2.299, -0.05, -0.03, -1.00 }, { 0.475, 0.410, -2.319, -0.01, -0.03, -1.00 }, { -0.599, 0.410, -2.299, -0.05, -0.03, -1.00 }, { -0.495, 0.410, -2.319, -0.01, -0.03, -1.00 } },
+  nolicense_porsche_gt3rs = { { 0.062, 0.325, -2.281, 0.00, 0.00, -1.00 }, { -0.057, 0.328, -2.272, 0.00, 0.00, -1.00 } },
+  nolicense_realistic_bmw_m340i_g20_chris = { { 0.491, 0.270, -2.207, 0.00, 0.00, -1.00 }, { -0.495, 0.270, -2.203, 0.00, 0.00, -1.00 }, { 0.595, 0.269, -2.159, 0.00, 0.00, -1.00 }, { -0.596, 0.269, -2.180, 0.00, 0.00, -1.00 } },
+  nolicense_realistic_mercedes_e63_w213 = { { 0.621, 0.317, -2.422, 0.18, 0.00, -0.98 }, { 0.499, 0.323, -2.465, -0.12, 0.00, -0.99 }, { -0.621, 0.317, -2.422, -0.18, 0.00, -0.98 }, { -0.499, 0.323, -2.465, 0.12, 0.00, -0.99 } },
+  nolicense_volkswagen_golf_r_mk8 = { { 0.572, 0.108, -2.175, 0.01, -0.01, -1.00 }, { 0.443, 0.108, -2.189, 0.01, -0.01, -1.00 }, { -0.572, 0.108, -2.175, 0.01, -0.01, -1.00 }, { -0.443, 0.108, -2.189, 0.01, -0.01, -1.00 } },
+}
+
+-- 1 = stock orange only. the rest add a coloured flame on top of the stock one
+local FLAMES = {
+  { 'Stock' },
+  { 'Blue',   rgbm(0.30, 0.55, 1.00, 1), 2.2 },
+  { 'Green',  rgbm(0.25, 1.00, 0.35, 1), 1.6 },
+  { 'Red',    rgbm(1.00, 0.18, 0.10, 1), 0.7 },
+  { 'Purple', rgbm(0.80, 0.30, 1.00, 1), 1.6 },
+  { 'Pink',   rgbm(1.00, 0.35, 0.75, 1), 1.5 },
+  { 'Cyan',   rgbm(0.20, 0.95, 1.00, 1), 2.0 },
+  { 'White',  rgbm(1.00, 1.00, 1.00, 1), 2.6 },
+  { 'Gold',   rgbm(1.00, 0.80, 0.25, 1), 1.0 },
+}
+-- what each pack car runs when its driver has not picked anything (0 in the build = car default)
+local FLAME_DEFAULT = {
+  nolicense_bmw_m3_g80 = 2, nolicense_bmw_x5m_f95 = 5, nolicense_c63_23 = 4, nolicense_clk55_amgkitturbo = 9,
+  nolicense_ford_mustang_gt350 = 3, nolicense_g82_comp_coupe = 7, nolicense_jeep_trackhawk = 4, nolicense_porsche_gt3rs = 8,
+  nolicense_realistic_bmw_m340i_g20_chris = 2, nolicense_realistic_mercedes_e63_w213 = 3, nolicense_volkswagen_golf_r_mk8 = 5,
+}
+local flameChoice = {}      -- car index -> { idx, pow }
+local flameEmitters = {}    -- car index -> emitter
+local flameOK = nil
+
+local function flameIndexFor(index)
+  local c = flameChoice[index]
+  local idx = c and c.idx or 0
+  if idx == 0 then idx = FLAME_DEFAULT[ac.getCarID(index) or ''] or 1 end
+  return idx, (c and c.pow) or 1.0
+end
+
+local function setFlames(index, idx, pow)
+  flameChoice[index] = { idx = idx or 0, pow = pow or 1.0 }
+end
+
+local function flamesUpdate(dt)
+  if flameOK == false then return end
+  local sim = ac.getSim()
+  for i = 0, sim.carsCount - 1 do
+    local car = ac.getCar(i)
+    if car and car.isConnected and car.anyFlamesActive then
+      local idx, pow = flameIndexFor(i)
+      local f = FLAMES[idx]
+      if f and f[2] then
+        local id = ac.getCarID(i) or ''
+        local ex = EXHAUSTS[id]
+        local em = flameEmitters[i]
+        if not em then
+          local ok, e = pcall(function()
+            return ac.Particles.Flame({ color = f[2], size = 0.22, temperatureMultiplier = f[3], flameIntensity = 0.6, carIndex = i })
+          end)
+          if not ok or not e then flameOK = false; dlog('flames unavailable: ' .. tostring(e)); return end
+          flameEmitters[i] = e
+          em = e
+        end
+        em.color = rgbm(f[2].r, f[2].g, f[2].b, 1.2 * pow)
+        em.temperatureMultiplier = f[3]
+        em.size = 0.18 + 0.1 * pow
+        em.flameIntensity = 0.5 * pow
+        local tr = car.transform or car.bodyTransform
+        local n = (sim.fps and sim.fps > 90) and 1 or 2
+        if ex and tr then
+          for _, e in ipairs(ex) do
+            local pos = tr:transformPoint(vec3(e[1], e[2], e[3]))
+            local dir = tr:transformVector(vec3(e[4], e[5], e[6]))
+            local vel = car.velocity + dir * (7 + 5 * pow) + vec3(math.random() - 0.5, math.random() * 0.5, math.random() - 0.5)
+            em:emit(pos, vel, n)
+          end
+        else
+          -- unknown car: middle of the rear bumper, low
+          local pos = car.position - car.look * 2.3 + car.up * 0.35
+          local vel = car.velocity - car.look * (7 + 5 * pow)
+          em:emit(pos, vel, n)
+        end
+      end
+    end
+  end
+end
+
 ------------------------------------------------------------------ whole builds
 
 local function applyBuild(index, b)
@@ -481,12 +621,14 @@ local function applyBuild(index, b)
   end
   if (b.plate or '') ~= '' or (b.platestyle or 0) ~= 0 then applyPlate(index, b.plate or '', false, b.platestyle or 0) else resetPlate(index) end
   setGlow(index, b.glow, b.rgbcycle, b.glowpower, b.brakeflash)
+  setFlames(index, b.flame or 0, b.flamepow or 1.0)
 end
 
 local function resetCar(index)
   for _, g in ipairs(GROUPS) do restore(index, g.id) end
   resetPlate(index)
   setGlow(index, nil)
+  setFlames(index, 0, 1.0)
 end
 
 local function loadSaved()
@@ -536,20 +678,23 @@ local function onPacket(sender, data)
   b.platestyle = data.style or 0
   b.glowpower = (data.power or 150) / 255
   b.plate = data.plate or ''
+  b.flame = data.flame or 0
+  b.flamepow = (data.flamepow or 100) / 100
   remoteBuilds[sender.index] = b
   if store.showOthers then
-    if flags == 0 and b.plate == '' and b.platestyle == 0 then resetCar(sender.index) else applyBuild(sender.index, b) end
+    if flags == 0 and b.plate == '' and b.platestyle == 0 and (b.flame or 0) == 0 then resetCar(sender.index) else applyBuild(sender.index, b) end
   end
 end
 
 pcall(function()
   syncEvent = ac.OnlineEvent({
-    ac.StructItem.key('NLCustomsSrv2'),
+    ac.StructItem.key('NLCustomsSrv3'),
     flags = ac.StructItem.int32(),
     body = ac.StructItem.rgb(), rims = ac.StructItem.rgb(), calipers = ac.StructItem.rgb(),
     leather = ac.StructItem.rgb(), accent = ac.StructItem.rgb(), glow = ac.StructItem.rgb(),
     plate = ac.StructItem.string(12),
     style = ac.StructItem.byte(), power = ac.StructItem.byte(), finish = ac.StructItem.byte(),
+    flame = ac.StructItem.byte(), flamepow = ac.StructItem.byte(),
   }, onPacket)
 end)
 
@@ -569,6 +714,7 @@ local function broadcast()
       leather = rgbOf(b.leather), accent = rgbOf(b.accent), glow = rgbOf(b.glow),
       plate = b.plate or '', style = b.platestyle or 0, finish = b.finish or 0,
       power = math.floor(math.max(0, math.min(1, b.glowpower or 0.6)) * 255),
+      flame = b.flame or 0, flamepow = math.floor(math.max(0.3, math.min(2, b.flamepow or 1)) * 100),
     }, true)
   end)
 end
@@ -901,6 +1047,7 @@ function script.update(dt)
     end
   end
   pcall(updateGlow, dt)
+  pcall(flamesUpdate, dt)
   pcall(showroomUpdate, dt)
   tune.scanTimer = tune.scanTimer + dt
   if tune.scanTimer > 2 then
@@ -1391,6 +1538,43 @@ function tabGlow()
       if nlToggle('Flash red on brake', build.brakeflash == true, 210) then build.brakeflash = not build.brakeflash; pushEditor() end
     end
     ui.setCursor(vec2(p.x, p.y + h + 10))
+    -- exhaust flames
+    local q = ui.getCursor()
+    local fh = 150
+    ui.dummy(vec2(580, fh))
+    ui.drawRectFilled(q, q + vec2(580, fh), rgbm(0, 0, 0, 0.5), 12)
+    ui.drawRect(q, q + vec2(580, fh), rgbm(0.016, 0.012, 0.024, 0.72), 12, ui.CornerFlags.All, 1)
+    ui.drawRectFilled(vec2(q.x + 10, q.y + 10), vec2(q.x + 42, q.y + 42), withA(BLUE, 0.15), 8)
+    icon('fire', vec2(q.x + 18, q.y + 18), 16, BLUE)
+    text('EXHAUST FLAMES', 12, vec2(q.x + 52, q.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
+    local cur = build.flame or 0
+    local eff = cur
+    if eff == 0 then eff = FLAME_DEFAULT[myCarID] or 1 end
+    text((cur == 0 and 'CAR DEFAULT: ' or '') .. (FLAMES[eff] and FLAMES[eff][1]:upper() or 'STOCK') .. '   (EVERYONE SEES IT)', 7, vec2(q.x + 52, q.y + 30), DIM, F_BOLD)
+    local x = q.x + 12
+    local y = q.y + 54
+    for i, f in ipairs(FLAMES) do
+      local w = 60
+      ui.setCursor(vec2(x, y))
+      ui.invisibleButton('##fl' .. i, vec2(w, 30))
+      local hov = ui.itemHovered()
+      if ui.itemClicked(ui.MouseButton.Left) then build.flame = i; pushEditor() end
+      local sel = cur == i
+      local col = f[2] or rgbm(1, 0.5, 0.15, 1)
+      ui.drawRectFilled(vec2(x, y), vec2(x + w, y + 30), sel and withA(col, 0.35) or rgbm(0, 0, 0, 0.45 + 0.15 * (hov and 1 or 0)), 10)
+      ui.drawRect(vec2(x, y), vec2(x + w, y + 30), sel and col or rgbm(0.016, 0.012, 0.024, 0.72), 10, ui.CornerFlags.All, 1)
+      ui.drawCircleFilled(vec2(x + 12, y + 15), 5, col, 12)
+      text(f[1]:upper(), 8, vec2(x + 22, y + 11), rgbm(1, 1, 1, 0.9), F_BOLD)
+      x = x + w + 4
+    end
+    ui.setCursor(vec2(q.x + 12, q.y + 96))
+    ui.setNextItemWidth(300)
+    local fv, fch = ui.slider('##fpow', build.flamepow or 1.0, 0.3, 2.0, 'Flame size: %.2f')
+    if fch then build.flamepow = fv; pushEditor() end
+    ui.setCursor(vec2(q.x + 324, q.y + 94))
+    if nlButton('Car default', 120, nil, 28) then build.flame = 0; pushEditor() end
+    text('COLOURED FLAMES COME OUT OF THE REAL PIPES ON PACK CARS. STOCK = ORANGE ONLY.', 7, vec2(q.x + 12, q.y + 130), DIM, F_BOLD)
+    ui.setCursor(vec2(q.x, q.y + fh + 10))
     popKitStyle()
   end)
 end
