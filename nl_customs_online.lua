@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.1'
+local VERSION = '2.2'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'End'
@@ -238,7 +238,7 @@ end
 
 -- stock values so Reset really goes back to stock
 local stock = {}
-local PROPS = { 'ksSpecular', 'ksSpecularEXP', 'ksEmissive', 'ksAmbient', 'ksDiffuse' }
+local PROPS = { 'ksSpecular', 'ksSpecularEXP', 'ksEmissive', 'ksAmbient', 'ksDiffuse', 'fresnelMaxLevel', 'fresnelC', 'fresnelEXP', 'detailUVMultiplier', 'useDetail' }
 local function remember(index, groupId, refs)
   local key = index .. ':' .. groupId
   if stock[key] then return end
@@ -276,13 +276,31 @@ local function paint(index, groupId, c, finish)
   if #refs > 0 then painted[index .. ':' .. groupId] = true end
   for _, ref in ipairs(refs) do
     local ok, err = pcall(function()
-      ref:setMaterialTexture('txDiffuse', rgbm(c[1], c[2], c[3], 1))
+      local col = rgbm(c[1], c[2], c[3], 1)
+      if finish == 3 then col = rgbm(0.55 + c[1] * 0.3, 0.55 + c[2] * 0.3, 0.55 + c[3] * 0.3, 1) end
+      ref:setMaterialTexture('txDiffuse', col)
       ref:setMaterialProperty('ksEmissive', rgb(0, 0, 0))
+      -- wheels and calipers often multiply the paint by a tinted detail map, which turns blue into purple. flatten it.
+      if groupId == 'rims' or groupId == 'calipers' or groupId == 'accent' then
+        pcall(function() ref:setMaterialTexture('txDetail', rgbm(0.5, 0.5, 0.5, 1)) end)
+        pcall(function() ref:setMaterialProperty('useDetail', 0) end)
+      end
       if finish then
-        if finish == 1 then ref:setMaterialProperty('ksSpecular', 0.03); ref:setMaterialProperty('ksSpecularEXP', 8)        -- matte
-        elseif finish == 2 then ref:setMaterialProperty('ksSpecular', 0.25); ref:setMaterialProperty('ksSpecularEXP', 30)   -- satin
-        elseif finish == 3 then ref:setMaterialProperty('ksSpecular', 1.4); ref:setMaterialProperty('ksSpecularEXP', 160)   -- chrome-ish
-        else ref:setMaterialProperty('ksSpecular', 0.55); ref:setMaterialProperty('ksSpecularEXP', 90) end                  -- gloss
+        if finish == 1 then            -- matte
+          ref:setMaterialProperty('ksSpecular', 0.03); ref:setMaterialProperty('ksSpecularEXP', 8)
+          pcall(function() ref:setMaterialProperty('fresnelMaxLevel', 0.05) end)
+        elseif finish == 2 then        -- satin
+          ref:setMaterialProperty('ksSpecular', 0.25); ref:setMaterialProperty('ksSpecularEXP', 30)
+          pcall(function() ref:setMaterialProperty('fresnelMaxLevel', 0.25) end)
+        elseif finish == 3 then        -- chrome: mirror reflections everywhere, tight highlight
+          ref:setMaterialProperty('ksSpecular', 1.2); ref:setMaterialProperty('ksSpecularEXP', 220)
+          ref:setMaterialProperty('ksAmbient', 0.25); ref:setMaterialProperty('ksDiffuse', 0.15)
+          pcall(function() ref:setMaterialProperty('fresnelMaxLevel', 1.0); ref:setMaterialProperty('fresnelC', 0.95); ref:setMaterialProperty('fresnelEXP', 1.0) end)
+          pcall(function() ref:setMaterialTexture('txMaps', rgbm(1, 1, 1, 1)) end)
+        else                           -- gloss
+          ref:setMaterialProperty('ksSpecular', 0.55); ref:setMaterialProperty('ksSpecularEXP', 90)
+          pcall(function() ref:setMaterialProperty('fresnelMaxLevel', 0.45) end)
+        end
       end
     end)
     if not ok then dlog('paint ' .. groupId .. ': ' .. tostring(err)) end
@@ -672,24 +690,27 @@ local KEYMAP = {
 }
 
 local PRESETS = {
-  { name = 'Drift', blurb = 'Locked diff, soft rear, loads of angle.',
-    v = { camber_f = 0.35, camber_r = 0.8, toe_f = 0.25, toe_r = 0.55, arb_f = 0.85, arb_r = 0.2, spring_f = 0.7, spring_r = 0.35, damp_f = 0.55, damp_r = 0.4, height_f = 0.45, height_r = 0.5, diff_power = 1.0, diff_coast = 1.0, diff_preload = 0.85, bias = 0.8, brake_power = 0.9, pressure_f = 0.55, pressure_r = 0.65, wing = 0.0 },
-    simple = { balance = 0.2, stiff = 0.5, diff = 1.0, bias = 0.8, pressure = 0.6, height = 0.48 } },
-  { name = 'Street', blurb = 'Planted at speed, quick on direction changes. Built for traffic.',
-    v = { camber_f = 0.45, camber_r = 0.6, toe_f = 0.5, toe_r = 0.65, arb_f = 0.6, arb_r = 0.5, spring_f = 0.55, spring_r = 0.55, damp_f = 0.55, damp_r = 0.55, height_f = 0.4, height_r = 0.42, diff_power = 0.45, diff_coast = 0.35, diff_preload = 0.4, bias = 0.62, brake_power = 0.85, pressure_f = 0.55, pressure_r = 0.55, wing = 0.3 },
-    simple = { balance = 0.6, stiff = 0.55, diff = 0.45, bias = 0.62, pressure = 0.55, height = 0.41 } },
-  { name = 'Grip', blurb = 'Track setup. Stiff, camber, a bit of wing.',
-    v = { camber_f = 0.3, camber_r = 0.45, toe_f = 0.45, toe_r = 0.6, arb_f = 0.6, arb_r = 0.5, spring_f = 0.72, spring_r = 0.65, damp_f = 0.62, damp_r = 0.6, height_f = 0.3, height_r = 0.33, diff_power = 0.55, diff_coast = 0.4, diff_preload = 0.45, bias = 0.62, brake_power = 0.95, pressure_f = 0.5, pressure_r = 0.5, wing = 0.6 },
-    simple = { balance = 0.55, stiff = 0.7, diff = 0.5, bias = 0.62, pressure = 0.5, height = 0.31 } },
-  { name = 'Cruise', blurb = 'Soft and forgiving. Nothing bites.',
-    v = { camber_f = 0.6, camber_r = 0.7, toe_f = 0.5, toe_r = 0.6, arb_f = 0.35, arb_r = 0.3, spring_f = 0.3, spring_r = 0.3, damp_f = 0.35, damp_r = 0.35, height_f = 0.55, height_r = 0.55, diff_power = 0.35, diff_coast = 0.3, diff_preload = 0.3, bias = 0.6, brake_power = 0.8, pressure_f = 0.5, pressure_r = 0.5, wing = 0.2 },
+  { name = 'Drift', blurb = 'Diff locked, front toe-out, soft rear, lots of caster feel. Initiates easily and holds angle.',
+    v = { camber_f = 0.30, camber_r = 0.85, toe_f = 0.15, toe_r = 0.50, arb_f = 0.80, arb_r = 0.15, spring_f = 0.70, spring_r = 0.30, damp_f = 0.55, damp_r = 0.35, height_f = 0.45, height_r = 0.55, diff_power = 1.0, diff_coast = 1.0, diff_preload = 1.0, bias = 0.85, brake_power = 0.9, pressure_f = 0.45, pressure_r = 0.80, wing = 0.0 },
+    simple = { balance = 0.15, stiff = 0.5, diff = 1.0, bias = 0.85, pressure = 0.65, height = 0.5 } },
+  { name = 'Street', blurb = 'Planted at speed, quick on direction changes, forgiving under braking. The traffic setup.',
+    v = { camber_f = 0.40, camber_r = 0.55, toe_f = 0.50, toe_r = 0.65, arb_f = 0.55, arb_r = 0.45, spring_f = 0.55, spring_r = 0.50, damp_f = 0.55, damp_r = 0.50, height_f = 0.35, height_r = 0.40, diff_power = 0.50, diff_coast = 0.35, diff_preload = 0.40, bias = 0.64, brake_power = 0.9, pressure_f = 0.50, pressure_r = 0.50, wing = 0.35 },
+    simple = { balance = 0.6, stiff = 0.55, diff = 0.45, bias = 0.64, pressure = 0.5, height = 0.38 } },
+  { name = 'Grip', blurb = 'Track setup. Stiff, more negative camber, low, a bit of wing. Fastest through corners.',
+    v = { camber_f = 0.20, camber_r = 0.40, toe_f = 0.42, toe_r = 0.62, arb_f = 0.65, arb_r = 0.50, spring_f = 0.75, spring_r = 0.70, damp_f = 0.65, damp_r = 0.62, height_f = 0.20, height_r = 0.25, diff_power = 0.45, diff_coast = 0.30, diff_preload = 0.35, bias = 0.62, brake_power = 1.0, pressure_f = 0.45, pressure_r = 0.45, wing = 0.7 },
+    simple = { balance = 0.55, stiff = 0.72, diff = 0.4, bias = 0.62, pressure = 0.45, height = 0.22 } },
+  { name = 'Cruise', blurb = 'Soft, comfortable, nothing bites. For long drives and traffic weaving at a chill pace.',
+    v = { camber_f = 0.60, camber_r = 0.70, toe_f = 0.50, toe_r = 0.60, arb_f = 0.35, arb_r = 0.30, spring_f = 0.30, spring_r = 0.30, damp_f = 0.35, damp_r = 0.35, height_f = 0.55, height_r = 0.55, diff_power = 0.35, diff_coast = 0.30, diff_preload = 0.30, bias = 0.60, brake_power = 0.8, pressure_f = 0.50, pressure_r = 0.50, wing = 0.2 },
     simple = { balance = 0.6, stiff = 0.3, diff = 0.33, bias = 0.6, pressure = 0.5, height = 0.55 } },
-  { name = 'Launch', blurb = 'Drag and rolls. Flat wheels, squat rear, diff locked on power.',
-    v = { camber_f = 0.8, camber_r = 0.85, toe_f = 0.5, toe_r = 0.55, arb_f = 0.5, arb_r = 0.4, spring_f = 0.6, spring_r = 0.3, damp_f = 0.5, damp_r = 0.4, height_f = 0.5, height_r = 0.45, diff_power = 0.95, diff_coast = 0.5, diff_preload = 0.6, bias = 0.65, brake_power = 0.9, pressure_f = 0.6, pressure_r = 0.45, wing = 0.0 },
-    simple = { balance = 0.55, stiff = 0.45, diff = 0.85, bias = 0.65, pressure = 0.52, height = 0.47 } },
-  { name = 'Slammed', blurb = 'As low as it goes, stiff, looks the part.',
-    v = { camber_f = 0.25, camber_r = 0.3, toe_f = 0.5, toe_r = 0.55, arb_f = 0.6, arb_r = 0.55, spring_f = 0.8, spring_r = 0.8, damp_f = 0.65, damp_r = 0.65, height_f = 0.0, height_r = 0.0, diff_power = 0.5, diff_coast = 0.4, diff_preload = 0.4, bias = 0.62, brake_power = 0.85, pressure_f = 0.5, pressure_r = 0.5, wing = 0.0 },
-    simple = { balance = 0.55, stiff = 0.8, diff = 0.5, bias = 0.62, pressure = 0.5, height = 0.0 } },
+  { name = 'Launch', blurb = 'Drag and rolls. Flat wheels for traction, soft rear for squat, diff locked on power.',
+    v = { camber_f = 0.85, camber_r = 0.90, toe_f = 0.50, toe_r = 0.52, arb_f = 0.50, arb_r = 0.35, spring_f = 0.60, spring_r = 0.25, damp_f = 0.50, damp_r = 0.35, height_f = 0.50, height_r = 0.40, diff_power = 1.0, diff_coast = 0.5, diff_preload = 0.7, bias = 0.65, brake_power = 0.9, pressure_f = 0.60, pressure_r = 0.35, wing = 0.0 },
+    simple = { balance = 0.55, stiff = 0.42, diff = 0.9, bias = 0.65, pressure = 0.48, height = 0.45 } },
+  { name = 'Slammed', blurb = 'As low as the car allows, stiff so it does not bottom out. Looks the part, still drives.',
+    v = { camber_f = 0.25, camber_r = 0.30, toe_f = 0.50, toe_r = 0.55, arb_f = 0.60, arb_r = 0.55, spring_f = 0.85, spring_r = 0.85, damp_f = 0.70, damp_r = 0.70, height_f = 0.0, height_r = 0.0, diff_power = 0.5, diff_coast = 0.4, diff_preload = 0.4, bias = 0.62, brake_power = 0.9, pressure_f = 0.5, pressure_r = 0.5, wing = 0.0 },
+    simple = { balance = 0.55, stiff = 0.85, diff = 0.5, bias = 0.62, pressure = 0.5, height = 0.0 } },
+  { name = 'Top speed', blurb = 'No wing, low drag camber, long legs. For the straights.',
+    v = { camber_f = 0.55, camber_r = 0.60, toe_f = 0.50, toe_r = 0.55, arb_f = 0.50, arb_r = 0.45, spring_f = 0.55, spring_r = 0.55, damp_f = 0.5, damp_r = 0.5, height_f = 0.30, height_r = 0.30, diff_power = 0.4, diff_coast = 0.3, diff_preload = 0.3, bias = 0.62, brake_power = 0.9, pressure_f = 0.6, pressure_r = 0.6, wing = 0.0 },
+    simple = { balance = 0.55, stiff = 0.55, diff = 0.38, bias = 0.62, pressure = 0.6, height = 0.3 } },
 }
 
 local function scanSpinners()
@@ -873,53 +894,103 @@ end
 ------------------------------------------------------------------ UI
 
 local GREEN = rgbm(0, 0.94, 0.35, 1)
+local GOLD = rgbm(1, 0.8, 0.2, 1)
+local RED = rgbm(1, 0.25, 0.22, 1)
 local DIM = rgbm(0.55, 0.57, 0.62, 1)
 local WARN = rgbm(1, 0.75, 0.3, 1)
 local F_BOLD = 'Bahnschrift;Weight=Bold'
 local F_MED = 'Bahnschrift;Weight=SemiBold'
+local menuUI = { tab = 1, tabX = 0, tabW = 0 }
+local anim = {}
 
-local function text(txt, size, pos, col, font)
+function text(txt, size, pos, col, font)
   ui.pushDWriteFont(font or F_MED)
   ui.dwriteDrawText(txt, size, pos, col)
   ui.popDWriteFont()
 end
-local function textW(txt, size, font)
+function textW(txt, size, font)
   ui.pushDWriteFont(font or F_MED)
   local w = ui.measureDWriteText(txt, size)
   ui.popDWriteFont()
   return w
 end
-local function withA(c, a) return rgbm(c.r, c.g, c.b, (c.mult or 1) * a) end
+function withA(c, a) return rgbm(c.r, c.g, c.b, (c.mult or 1) * a) end
+function lerpC(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
+function ease(id, target, speed)
+  local dt = 0.016
+  pcall(function() dt = math.min(0.1, ac.getSim().dt or 0.016) end)
+  local v = anim[id]
+  if v == nil then v = target end
+  v = v + (target - v) * math.min(1, dt * (speed or 14))
+  anim[id] = v
+  return v
+end
 
--- flat button. accent = filled in that colour, otherwise dark
-local function nlButton(label, w, accent, h)
-  h = h or 26
+function nlButton(label, w, accent, h)
+  h = h or 28
   local p = ui.getCursor()
   ui.invisibleButton('##b' .. label, vec2(w, h))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
+  local f = ease('b' .. label, hov and 1 or 0)
   if accent then
-    ui.drawRectFilled(p, p + vec2(w, h), withA(accent, hov and 1 or 0.85), 4)
+    ui.drawRectFilled(p, p + vec2(w, h), withA(accent, 0.8 + 0.2 * f), 5)
+    ui.drawRectFilled(vec2(p.x, p.y + h - 2), vec2(p.x + w, p.y + h), rgbm(0, 0, 0, 0.25), 1)
   else
-    ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, hov and 0.16 or 0.08), 4)
+    ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.07 + 0.1 * f), 5)
+    ui.drawRect(p, p + vec2(w, h), rgbm(1, 1, 1, 0.08 + 0.3 * f), 5, ui.CornerFlags.All, 1)
   end
   local tw = textW(label, 11, F_BOLD)
-  text(label, 11, vec2(p.x + (w - tw.x) / 2, p.y + (h - 13) / 2), accent and rgbm(0.04, 0.04, 0.05, 1) or rgbm(1, 1, 1, 1), F_BOLD)
+  text(label, 11, vec2(p.x + (w - tw.x) / 2, p.y + (h - 13) / 2), accent and rgbm(0.04, 0.04, 0.05, 1) or rgbm(1, 1, 1, 0.85 + 0.15 * f), F_BOLD)
   return clicked
 end
 
--- on/off pill
-local function nlToggle(label, on, w)
+function nlToggle(label, on, w)
   local p = ui.getCursor()
-  w = w or 150
-  ui.invisibleButton('##t' .. label, vec2(w, 24))
+  w = w or 200
+  ui.invisibleButton('##t' .. label, vec2(w, 28))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
-  ui.drawRectFilled(p, p + vec2(w, 24), rgbm(1, 1, 1, hov and 0.12 or 0.06), 4)
-  ui.drawRectFilled(vec2(p.x + 6, p.y + 6), vec2(p.x + 30, p.y + 18), on and GREEN or rgbm(1, 1, 1, 0.15), 6)
-  ui.drawCircleFilled(vec2(on and (p.x + 24) or (p.x + 12), p.y + 12), 5, on and rgbm(0.04, 0.04, 0.05, 1) or rgbm(0.8, 0.8, 0.85, 1), 12)
-  text(label, 11, vec2(p.x + 38, p.y + 5), rgbm(1, 1, 1, 1), F_BOLD)
+  local f = ease('tg' .. label, on and 1 or 0)
+  local hf = ease('tgh' .. label, hov and 1 or 0)
+  ui.drawRectFilled(p, p + vec2(w, 28), rgbm(1, 1, 1, 0.05 + 0.05 * hf), 5)
+  ui.drawRectFilled(vec2(p.x + 8, p.y + 8), vec2(p.x + 34, p.y + 20), lerpC(rgbm(1, 1, 1, 0.15), GREEN, f), 6)
+  ui.drawCircleFilled(vec2(p.x + 14 + 14 * f, p.y + 14), 5, lerpC(rgbm(0.8, 0.8, 0.85, 1), rgbm(0.04, 0.04, 0.05, 1), f), 12)
+  text(label, 11, vec2(p.x + 44, p.y + 7), rgbm(1, 1, 1, 0.9), F_BOLD)
   return clicked
+end
+
+function section(label, col)
+  local p = ui.getCursor()
+  ui.dummy(vec2(10, 18))
+  ui.drawRectFilled(vec2(p.x, p.y + 4), vec2(p.x + 3, p.y + 14), col or GREEN, 1)
+  text(label:upper(), 9, vec2(p.x + 9, p.y + 3), rgbm(0.75, 0.77, 0.82, 1), F_BOLD)
+end
+
+function nlTabs(id, labels, state, w)
+  local p = ui.getCursor()
+  local h = 30
+  ui.dummy(vec2(w, h + 6))
+  ui.drawRectFilled(vec2(p.x, p.y + h), vec2(p.x + w, p.y + h + 1), rgbm(1, 1, 1, 0.08))
+  local x = p.x
+  local selX, selW = p.x, 40
+  for i, label in ipairs(labels) do
+    local tw = textW(label, 11, F_BOLD).x
+    local bw = tw + 24
+    ui.setCursor(vec2(x, p.y))
+    ui.invisibleButton('##tab' .. id .. i, vec2(bw, h))
+    local hov = ui.itemHovered()
+    if ui.itemClicked(ui.MouseButton.Left) then state.tab = i end
+    local sel = state.tab == i
+    local f = ease('tab' .. id .. i, (sel and 1 or (hov and 0.5 or 0)))
+    text(label, 11, vec2(x + 12, p.y + 9), lerpC(rgbm(0.6, 0.62, 0.68, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
+    if sel then selX, selW = x + 8, bw - 16 end
+    x = x + bw
+  end
+  state.tabX = ease('tabx' .. id, selX, 18)
+  state.tabW = ease('tabw' .. id, selW, 18)
+  ui.drawRectFilled(vec2(state.tabX, p.y + h - 2), vec2(state.tabX + state.tabW, p.y + h + 1), GREEN, 1)
+  ui.setCursor(vec2(p.x, p.y + h + 8))
 end
 
 local SWATCHES = {
@@ -929,12 +1000,12 @@ local SWATCHES = {
   { 'Blood', 0.35, 0.0, 0.02 }, { 'Forest', 0.05, 0.3, 0.12 }, { 'Navy', 0.03, 0.08, 0.3 }, { 'Sand', 0.76, 0.68, 0.5 },
 }
 
--- a row of colour squares; click = pick that colour for the group
-local function swatchRow(id)
+-- colour squares that grow on hover. click = paint
+function swatchRow(id)
   local p = ui.getCursor()
-  local sz, gap = 30, 5
+  local sz, gap = 28, 6
   local n = #SWATCHES
-  ui.invisibleButton('##sw' .. id, vec2(n * (sz + gap), sz))
+  ui.invisibleButton('##sw' .. id, vec2(n * (sz + gap), sz + 6))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
   local mx = nil
@@ -942,10 +1013,13 @@ local function swatchRow(id)
   local hit = nil
   for i, sw in ipairs(SWATCHES) do
     local x = p.x + (i - 1) * (sz + gap)
+    local over = mx and mx.x >= x and mx.x <= x + sz and mx.y >= p.y and mx.y <= p.y + sz + 6
+    if over then hit = sw end
+    local f = ease('sw' .. id .. i, over and 1 or 0, 18)
+    local g = 3 * f
     local isSel = enabled[id] and math.abs(pick[id].r - sw[2]) < 0.01 and math.abs(pick[id].g - sw[3]) < 0.01 and math.abs(pick[id].b - sw[4]) < 0.01
-    ui.drawRectFilled(vec2(x, p.y), vec2(x + sz, p.y + sz), rgbm(sw[2], sw[3], sw[4], 1), 4)
-    if isSel then ui.drawRect(vec2(x, p.y), vec2(x + sz, p.y + sz), rgbm(1, 1, 1, 1), 4, ui.CornerFlags.All, 2) end
-    if mx and mx.x >= x and mx.x <= x + sz and mx.y >= p.y and mx.y <= p.y + sz then hit = sw end
+    ui.drawRectFilled(vec2(x - g, p.y + 3 - g), vec2(x + sz + g, p.y + 3 + sz + g), rgbm(sw[2], sw[3], sw[4], 1), 5)
+    if isSel then ui.drawRect(vec2(x - g - 1, p.y + 2 - g), vec2(x + sz + g + 1, p.y + 4 + sz + g), rgbm(1, 1, 1, 1), 5, ui.CornerFlags.All, 2) end
   end
   if hit and hov then ui.setTooltip(hit[1]) end
   if clicked and hit then
@@ -955,210 +1029,320 @@ local function swatchRow(id)
   end
 end
 
-local function colourBlock(id, label)
+-- one paint group as a card: toggle + current colour chip + swatches + picker
+function colourBlock(id, label, w)
+  w = w or 580
   ui.pushID(id)
-  if nlToggle(label, enabled[id], 170) then enabled[id] = not enabled[id]; pushEditor() end
-  swatchRow(id)
-  if enabled[id] then
+  local p = ui.getCursor()
+  local open = enabled[id]
+  local h = open and 262 or 44
+  ui.dummy(vec2(w, h))
+  ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.045), 7)
+  if open then ui.drawRectFilled(p, vec2(p.x + 3, p.y + h), withA(pick[id], 1), 2) end
+  ui.setCursor(vec2(p.x + 10, p.y + 8))
+  if nlToggle(label, enabled[id], 200) then enabled[id] = not enabled[id]; pushEditor() end
+  local chip = enabled[id] and pick[id] or rgbm(1, 1, 1, 0.1)
+  ui.drawCircleFilled(vec2(p.x + w - 24, p.y + 22), 11, chip, 24)
+  ui.drawCircle(vec2(p.x + w - 24, p.y + 22), 11, rgbm(1, 1, 1, 0.2), 24, 1)
+  if not enabled[id] then text('off - stock colour', 9, vec2(p.x + 230, p.y + 15), DIM) end
+  if open then
+    ui.setCursor(vec2(p.x + 10, p.y + 44))
+    swatchRow(id)
+    ui.setCursor(vec2(p.x + 10, p.y + 84))
+    ui.setNextItemWidth(200)
     if ui.colorPicker('##pk' .. id, pick[id], bit.bor(ui.ColorPickerFlags.NoAlpha, ui.ColorPickerFlags.PickerHueBar, ui.ColorPickerFlags.NoSidePreview)) then pushEditor() end
   end
+  ui.setCursor(vec2(p.x, p.y + h + 8))
   ui.popID()
 end
 
-local function tabPaint()
-  colourBlock('body', 'Body paint')
-  if enabled.body then
-    ui.text('Finish')
-    for i, f in ipairs(FINISHES) do
-      if nlButton(f, 90, (build.finish or 0) == i - 1 and GREEN or nil) then build.finish = i - 1; pushEditor() end
-      if i < #FINISHES then ui.sameLine(0, 6) end
-    end
+function finishButtons(w)
+  local p = ui.getCursor()
+  ui.dummy(vec2(w, 54))
+  ui.drawRectFilled(p, p + vec2(w, 54), rgbm(1, 1, 1, 0.045), 7)
+  text('FINISH', 9, vec2(p.x + 12, p.y + 8), rgbm(0.75, 0.77, 0.82, 1), F_BOLD)
+  local x = p.x + 80
+  for i, f in ipairs(FINISHES) do
+    ui.setCursor(vec2(x, p.y + 13))
+    local sel = (build.finish or 0) == i - 1
+    if nlButton(f, 100, sel and GREEN or nil) then build.finish = i - 1; pushEditor() end
+    -- little sphere preview
+    local cx, cy = x + 100 - 14, p.y + 27
+    local base = enabled.body and pick.body or rgbm(0.5, 0.5, 0.55, 1)
+    ui.drawCircleFilled(vec2(cx, cy), 7, sel and rgbm(0.04, 0.04, 0.05, 1) or base, 16)
+    if i ~= 2 then ui.drawCircleFilled(vec2(cx - 2, cy - 2), i == 4 and 3.5 or 2, rgbm(1, 1, 1, i == 4 and 1 or (i == 3 and 0.5 or 0.8)), 10) end
+    x = x + 112
   end
-  ui.separator()
-  colourBlock('rims', 'Wheels')
-  ui.separator()
-  colourBlock('calipers', 'Calipers')
+  ui.setCursor(vec2(p.x, p.y + 62))
 end
 
-local function tabInterior()
-  colourBlock('leather', 'Leather / alcantara')
-  ui.separator()
-  colourBlock('accent', 'Trim accents')
-  ui.textColored('Not every car has recolourable accents.', DIM)
+function tabPaint()
+  ui.childWindow('##paint', vec2(600, 400), false, 0, function()
+    colourBlock('body', 'Body paint')
+    if enabled.body then finishButtons(580) end
+    colourBlock('rims', 'Wheels')
+    colourBlock('calipers', 'Calipers')
+  end)
 end
 
-local function tabPlate()
-  ui.text('Registration (up to 10 characters)')
+function tabInterior()
+  ui.childWindow('##int', vec2(600, 400), false, 0, function()
+    colourBlock('leather', 'Leather / alcantara')
+    colourBlock('accent', 'Trim accents')
+    text('Not every car has recolourable accents. Save tab shows what was found on this car.', 9, ui.getCursor() + vec2(4, 0), DIM)
+    ui.dummy(vec2(1, 14))
+  end)
+end
+
+function tabPlate()
+  section('registration (up to 10 characters)')
+  ui.setNextItemWidth(300)
   local v, changed = ui.inputText('##plate', plateText, ui.InputTextFlags.CharsUppercase)
   if changed then plateText = v:sub(1, 10); pushEditor() end
-  ui.text('Style')
-  for i, s in ipairs(PLATE_STYLES) do
-    if nlButton(s, 110, (build.platestyle or 0) == i - 1 and GREEN or nil) then build.platestyle = i - 1; pushEditor() end
+  ui.sameLine(0, 8)
+  if nlButton('Stock plate', 110) then plateText = ''; build.platestyle = 0; pushEditor() end
+  section('style')
+  for i, st in ipairs(PLATE_STYLES) do
+    if nlButton(st, 120, (build.platestyle or 0) == i - 1 and GREEN or nil) then build.platestyle = i - 1; pushEditor() end
     if i < #PLATE_STYLES then ui.sameLine(0, 6) end
   end
-  ui.dummy(vec2(0, 6))
-  if nlButton('Stock plate', 110) then plateText = ''; build.platestyle = 0; pushEditor() end
+  section('preview')
+  local p = ui.getCursor()
+  ui.dummy(vec2(400, 100))
+  pcall(function() drawUKPlate(p.x, p.y, 400, 100, plateText, YELLOW, build.platestyle or 0) end)
+  ui.drawRect(p, p + vec2(400, 100), rgbm(1, 1, 1, 0.15), 3, ui.CornerFlags.All, 1)
+  text('Shows on the front and rear plate. Everyone on the server sees it.', 9, ui.getCursor() + vec2(4, 2), DIM)
+  ui.dummy(vec2(1, 14))
 end
 
-local function tabGlow()
-  if nlToggle('Underglow', enabled.glow, 170) then enabled.glow = not enabled.glow; pushEditor() end
-  swatchRow('glow')
-  if enabled.glow then
-    if ui.colorPicker('##pkglow', pick.glow, bit.bor(ui.ColorPickerFlags.NoAlpha, ui.ColorPickerFlags.PickerHueBar, ui.ColorPickerFlags.NoSidePreview)) then pushEditor() end
-    local v, ch = ui.slider('##gp', build.glowpower or 0.6, 0.1, 1.0, 'Brightness: %.2f')
-    if ch then build.glowpower = v; pushEditor() end
-    if nlToggle('RGB cycle', build.rgbcycle == true, 150) then build.rgbcycle = not build.rgbcycle; pushEditor() end
-    ui.sameLine(0, 8)
-    if nlToggle('Flash red on brake', build.brakeflash == true, 190) then build.brakeflash = not build.brakeflash; pushEditor() end
-  end
-end
-
-local function tabLooks()
-  ui.textColored('One click full builds. Tweak after in Paint.', DIM)
-  for i, L in ipairs(LOOKS) do
+function tabGlow()
+  ui.childWindow('##glow', vec2(600, 400), false, 0, function()
     local p = ui.getCursor()
-    ui.invisibleButton('##look' .. i, vec2(128, 54))
-    local hov = ui.itemHovered()
-    if ui.itemClicked(ui.MouseButton.Left) then applyLook(L) end
-    ui.drawRectFilled(p, p + vec2(128, 54), rgbm(1, 1, 1, hov and 0.14 or 0.07), 5)
-    ui.drawRectFilled(vec2(p.x + 8, p.y + 8), vec2(p.x + 48, p.y + 46), rgbm(L.body[1], L.body[2], L.body[3], 1), 4)
-    if L.calipers then ui.drawCircleFilled(vec2(p.x + 42, p.y + 40), 6, rgbm(L.calipers[1], L.calipers[2], L.calipers[3], 1), 12) end
-    text(L.name, 12, vec2(p.x + 56, p.y + 12), rgbm(1, 1, 1, 1), F_BOLD)
-    text(FINISHES[(L.finish or 0) + 1] .. (L.glow and ' + glow' or ''), 9, vec2(p.x + 56, p.y + 30), DIM)
-    if i % 4 ~= 0 and i < #LOOKS then ui.sameLine(0, 8) end
-  end
+    local open = enabled.glow
+    local h = open and 320 or 44
+    ui.dummy(vec2(580, h))
+    ui.drawRectFilled(p, p + vec2(580, h), rgbm(1, 1, 1, 0.045), 7)
+    ui.setCursor(vec2(p.x + 10, p.y + 8))
+    if nlToggle('Underglow', enabled.glow, 200) then enabled.glow = not enabled.glow; pushEditor() end
+    if open then
+      -- preview strip: the colour (or the rainbow) glowing under a dark bar
+      local gc = pick.glow
+      if build.rgbcycle then local r, g, b = hsv(hueT % 1); gc = rgbm(r, g, b, 1) end
+      pcall(function() ui.drawRectFilledMultiColor(vec2(p.x + 20, p.y + 44), vec2(p.x + 560, p.y + 64), withA(gc, 0.0), withA(gc, 0.0), withA(gc, 0.9 * (build.glowpower or 0.6)), withA(gc, 0.9 * (build.glowpower or 0.6))) end)
+      ui.drawRectFilled(vec2(p.x + 60, p.y + 38), vec2(p.x + 520, p.y + 50), rgbm(0.08, 0.08, 0.1, 1), 4)
+      ui.setCursor(vec2(p.x + 10, p.y + 76))
+      swatchRow('glow')
+      ui.setCursor(vec2(p.x + 10, p.y + 116))
+      ui.setNextItemWidth(200)
+      if ui.colorPicker('##pkglow', pick.glow, bit.bor(ui.ColorPickerFlags.NoAlpha, ui.ColorPickerFlags.PickerHueBar, ui.ColorPickerFlags.NoSidePreview)) then pushEditor() end
+      ui.setCursor(vec2(p.x + 240, p.y + 120))
+      ui.setNextItemWidth(300)
+      local v, ch = ui.slider('##gp', build.glowpower or 0.6, 0.1, 1.0, 'Brightness: %.2f')
+      if ch then build.glowpower = v; pushEditor() end
+      ui.setCursor(vec2(p.x + 240, p.y + 156))
+      if nlToggle('RGB cycle', build.rgbcycle == true, 150) then build.rgbcycle = not build.rgbcycle; pushEditor() end
+      ui.setCursor(vec2(p.x + 240, p.y + 190))
+      if nlToggle('Flash red on brake', build.brakeflash == true, 190) then build.brakeflash = not build.brakeflash; pushEditor() end
+    end
+    ui.setCursor(vec2(p.x, p.y + h + 8))
+  end)
 end
 
-local function simpleSlider(key, label, left, right)
+function tabLooks()
+  section('one click builds. tweak after in paint.')
+  ui.childWindow('##looks', vec2(600, 360), false, 0, function()
+    for i, L in ipairs(LOOKS) do
+      local p = ui.getCursor()
+      ui.invisibleButton('##look' .. i, vec2(138, 64))
+      local hov = ui.itemHovered()
+      if ui.itemClicked(ui.MouseButton.Left) then applyLook(L) end
+      local f = ease('look' .. i, hov and 1 or 0)
+      ui.drawRectFilled(p, p + vec2(138, 64), rgbm(1, 1, 1, 0.05 + 0.08 * f), 7)
+      ui.drawRect(p, p + vec2(138, 64), rgbm(1, 1, 1, 0.06 + 0.4 * f), 7, ui.CornerFlags.All, 1)
+      ui.drawRectFilled(vec2(p.x + 8, p.y + 8), vec2(p.x + 52, p.y + 56), rgbm(L.body[1], L.body[2], L.body[3], 1), 5)
+      if L.finish == 3 then ui.drawCircleFilled(vec2(p.x + 20, p.y + 20), 5, rgbm(1, 1, 1, 0.9), 10) elseif L.finish == 0 then ui.drawCircleFilled(vec2(p.x + 20, p.y + 20), 3, rgbm(1, 1, 1, 0.6), 10) end
+      local cx = p.x + 60
+      for _, key in ipairs({ 'rims', 'calipers', 'glow' }) do
+        local c = L[key]
+        ui.drawCircleFilled(vec2(cx + 6, p.y + 48), 6, c and rgbm(c[1], c[2], c[3], 1) or rgbm(1, 1, 1, 0.08), 12)
+        cx = cx + 16
+      end
+      text(L.name, 12, vec2(p.x + 60, p.y + 10), rgbm(1, 1, 1, 1), F_BOLD)
+      text(FINISHES[(L.finish or 0) + 1], 8, vec2(p.x + 60, p.y + 27), DIM)
+      if i % 4 ~= 0 and i < #LOOKS then ui.sameLine(0, 8) else ui.dummy(vec2(1, 6)) end
+    end
+  end)
+end
+
+function simpleSlider(key, label, left, right)
+  ui.setNextItemWidth(560)
   local v, changed = ui.slider('##' .. key, tune.simple[key], 0, 1, label .. ': %.2f')
   if changed then tune.simple[key] = v; tune.presetName = '' end
-  ui.textColored(left, DIM)
-  ui.sameLine(ui.availableSpaceX() - textW(right, 11).x - 4)
-  ui.textColored(right, DIM)
+  local p = ui.getCursor()
+  text(left, 8, vec2(p.x + 2, p.y - 2), DIM)
+  local rw = textW(right, 8).x
+  text(right, 8, vec2(p.x + 560 - rw - 2, p.y - 2), DIM)
+  ui.dummy(vec2(1, 10))
   return changed
 end
 
-local function tabTune()
-  if canEdit() then ui.textColored('In the pits. Changes apply straight away.', GREEN)
-  else ui.textColored('Changes queue up and apply when you are in the pits with the setup screen open.', WARN) end
-  ui.text('Presets')
-  for i, p in ipairs(PRESETS) do
-    if nlButton(p.name, 96, tune.presetName == p.name and GREEN or nil) then applyPreset(p) end
-    if ui.itemHovered() then ui.setTooltip(p.blurb) end
-    if i % 6 ~= 0 and i < #PRESETS then ui.sameLine(0, 6) end
-  end
-  ui.separator()
-  ui.text('Feel')
-  local ch = false
-  ch = simpleSlider('balance', 'Balance', 'Oversteer / loose', 'Understeer / planted') or ch
-  ch = simpleSlider('stiff', 'Stiffness', 'Soft, comfy', 'Stiff, sharp') or ch
-  ch = simpleSlider('diff', 'Diff lock', 'Open', 'Locked (drift / launch)') or ch
-  ch = simpleSlider('bias', 'Brake bias', 'Rear brakes', 'Front brakes') or ch
-  ch = simpleSlider('pressure', 'Tyre pressure', 'Low, more grip', 'High, more slide') or ch
-  ch = simpleSlider('height', 'Ride height', 'Slammed', 'Raised') or ch
-  if ch then simpleDirty = true; simpleTimer = 0.6 end
-  ui.separator()
-  tune.saveName = ui.inputText('##tunename', tune.saveName)
-  ui.sameLine()
-  if nlButton('Save tune', 110) then saveTuneFile() end
-  if nlButton('Copy tune', 110) then exportTune() end
-  ui.sameLine(0, 6)
-  if nlButton('Import tune', 110) then importTune() end
-  ui.treeNode('Saved tunes', function()
-    if tune.files == nil or #tune.files == 0 then ui.textColored('No saved tunes for this car yet.', DIM)
-    else for _, fn in ipairs(tune.files) do if ui.button(fn:gsub('%.ini$', ''), vec2(ui.availableSpaceX() - 8, 22)) then loadTuneFile(fn) end end end
-    if ui.button('Refresh') then refreshFiles() end
-  end)
-  ui.treeNode('Advanced (every setting)', function()
-    if tune.spinners == nil or #tune.spinners == 0 then
-      ui.textColored('Nothing here until the setup screen has been opened once.', DIM)
-      if ui.button('Scan now') then scanSpinners() end
-    else
-      for _, s in ipairs(tune.spinners) do
-        if s.visible ~= false then
-          local label = (s.label or s.name) .. (s.units and (' (' .. s.units .. ')') or '')
-          local pend = tune.pending[s.name]
-          local v, changed = ui.slider('##' .. s.name, pend or s.value, s.min, s.max, label .. ': %.0f', true)
-          if changed then
-            local step = (s.step and s.step > 0) and s.step or 1
-            tune.pending[s.name] = math.floor(s.min + math.floor((v - s.min) / step + 0.5) * step + 0.5)
-            tune.presetName = ''
-            simpleDirty = true; simpleTimer = 0.3
+function tabTune()
+  ui.childWindow('##tune', vec2(600, 400), false, 0, function()
+    if canEdit() then text('IN THE PITS - changes apply straight away', 9, ui.getCursor(), GREEN, F_BOLD)
+    else text('Changes queue up and apply when you are in the pits with the setup screen open', 9, ui.getCursor(), WARN, F_BOLD) end
+    ui.dummy(vec2(1, 14))
+    section('presets')
+    for i, pr in ipairs(PRESETS) do
+      local p = ui.getCursor()
+      ui.invisibleButton('##pre' .. i, vec2(138, 56))
+      local hov = ui.itemHovered()
+      if ui.itemClicked(ui.MouseButton.Left) then applyPreset(pr) end
+      local sel = tune.presetName == pr.name
+      local f = ease('pre' .. i, hov and 1 or 0)
+      ui.drawRectFilled(p, p + vec2(138, 56), sel and withA(GREEN, 0.18) or rgbm(1, 1, 1, 0.05 + 0.08 * f), 7)
+      ui.drawRect(p, p + vec2(138, 56), sel and GREEN or rgbm(1, 1, 1, 0.06 + 0.4 * f), 7, ui.CornerFlags.All, 1)
+      text(pr.name, 12, vec2(p.x + 10, p.y + 8), sel and GREEN or rgbm(1, 1, 1, 1), F_BOLD)
+      -- mini bars: stiff / diff / height
+      local sm = pr.simple
+      local bx = p.x + 10
+      for _, k in ipairs({ 'stiff', 'diff', 'height' }) do
+        ui.drawRectFilled(vec2(bx, p.y + 40), vec2(bx + 36, p.y + 44), rgbm(1, 1, 1, 0.1), 2)
+        ui.drawRectFilled(vec2(bx, p.y + 40), vec2(bx + 36 * sm[k], p.y + 44), sel and GREEN or rgbm(1, 1, 1, 0.5), 2)
+        bx = bx + 42
+      end
+      text('stiff   diff   height', 6, vec2(p.x + 10, p.y + 28), DIM)
+      if hov then ui.setTooltip(pr.blurb) end
+      if i % 4 ~= 0 and i < #PRESETS then ui.sameLine(0, 8) else ui.dummy(vec2(1, 4)) end
+    end
+    section('feel')
+    local ch = false
+    ch = simpleSlider('balance', 'Balance', 'Oversteer / loose', 'Understeer / planted') or ch
+    ch = simpleSlider('stiff', 'Stiffness', 'Soft, comfy', 'Stiff, sharp') or ch
+    ch = simpleSlider('diff', 'Diff lock', 'Open', 'Locked (drift / launch)') or ch
+    ch = simpleSlider('bias', 'Brake bias', 'Rear brakes', 'Front brakes') or ch
+    ch = simpleSlider('pressure', 'Tyre pressure', 'Low, more grip', 'High, more slide') or ch
+    ch = simpleSlider('height', 'Ride height', 'Slammed', 'Raised') or ch
+    if ch then simpleDirty = true; simpleTimer = 0.6 end
+    section('save and share')
+    ui.setNextItemWidth(220)
+    tune.saveName = ui.inputText('##tunename', tune.saveName)
+    ui.sameLine(0, 6)
+    if nlButton('Save tune', 100, GREEN) then saveTuneFile() end
+    ui.sameLine(0, 6)
+    if nlButton('Copy tune', 100) then exportTune() end
+    ui.sameLine(0, 6)
+    if nlButton('Import tune', 100) then importTune() end
+    text('Copied tunes are text. Paste them in Discord, friends import them with one click.', 9, ui.getCursor() + vec2(2, 0), DIM)
+    ui.dummy(vec2(1, 14))
+    ui.treeNode('Saved tunes', function()
+      if tune.files == nil or #tune.files == 0 then ui.textColored('No saved tunes for this car yet.', DIM)
+      else for _, fn in ipairs(tune.files) do if nlButton(fn:gsub('%.ini$', ''), 540) then loadTuneFile(fn) end end end
+      if nlButton('Refresh list', 120) then refreshFiles() end
+    end)
+    ui.treeNode('Advanced (every setting)', function()
+      if tune.spinners == nil or #tune.spinners == 0 then
+        ui.textColored('Nothing here until the setup screen has been opened once.', DIM)
+        if nlButton('Scan now', 100) then scanSpinners() end
+      else
+        for _, sp in ipairs(tune.spinners) do
+          if sp.visible ~= false then
+            local label = (sp.label or sp.name) .. (sp.units and (' (' .. sp.units .. ')') or '')
+            local pend = tune.pending[sp.name]
+            ui.setNextItemWidth(480)
+            local v, changed = ui.slider('##' .. sp.name, pend or sp.value, sp.min, sp.max, label .. ': %.0f', true)
+            if changed then
+              local step = (sp.step and sp.step > 0) and sp.step or 1
+              tune.pending[sp.name] = math.floor(sp.min + math.floor((v - sp.min) / step + 0.5) * step + 0.5)
+              tune.presetName = ''
+              simpleDirty = true; simpleTimer = 0.3
+            end
+            if sp.readOnly then ui.sameLine(); ui.textColored('locked', DIM) end
           end
-          if s.readOnly then ui.sameLine(); ui.textColored('locked', DIM) end
         end
       end
-    end
+    end)
   end)
 end
 
-local function tabShowroom()
-  ui.textColored('Orbit camera round your car for screenshots and clips.', DIM)
+function tabShowroom()
+  section('orbit camera for screenshots and clips')
   if showroom.cam then
     if nlButton('Stop', 110, GREEN) then showroomStop() end
     ui.sameLine(0, 6)
     if nlToggle('Auto orbit', showroom.auto, 130) then showroom.auto = not showroom.auto end
+    ui.setNextItemWidth(400)
     showroom.angle = ui.slider('##ang', showroom.angle, 0, math.pi * 2, 'Angle: %.2f')
+    ui.setNextItemWidth(400)
     showroom.speed = ui.slider('##spd', showroom.speed, 0.05, 1.5, 'Speed: %.2f')
+    ui.setNextItemWidth(400)
     showroom.dist = ui.slider('##dst', showroom.dist, 3, 14, 'Distance: %.1f m')
+    ui.setNextItemWidth(400)
     showroom.height = ui.slider('##hgt', showroom.height, 0.3, 4, 'Height: %.1f m')
+    ui.setNextItemWidth(400)
     showroom.fov = ui.slider('##fov', showroom.fov, 20, 70, 'FOV: %.0f')
+    text('F8 takes a screenshot. Close this menu to watch it orbit.', 9, ui.getCursor() + vec2(2, 0), DIM)
+    ui.dummy(vec2(1, 14))
   else
     if nlButton('Start showroom', 150, GREEN) then showroomStart() end
   end
 end
 
-local function tabSave()
-  if nlButton('Save this build', 150, GREEN) then saveBuild() end
-  ui.sameLine(0, 6)
-  if nlButton('Reset to stock', 130) then resetAll() end
-  ui.dummy(vec2(0, 4))
-  if nlButton('Copy build code', 150) then exportCode() end
-  ui.sameLine(0, 6)
-  if nlButton('Import build code', 150) then importCode() end
-  ui.textColored('Build codes are text. Paste them in Discord, friends import your exact look.', DIM)
-  ui.separator()
-  if nlToggle('Show my build to others', store.shareBuild, 230) then store.shareBuild = not store.shareBuild; dirty = true; dirtyTimer = 0.2 end
-  if nlToggle('Show other players\' builds', store.showOthers, 230) then
-    store.showOthers = not store.showOthers
-    for i, b in pairs(remoteBuilds) do if store.showOthers then applyBuild(i, b) else resetCar(i) end end
-  end
-  ui.separator()
-  ui.textColored('Menu key', DIM)
-  if menuButton then
-    local okc = pcall(function() menuButton:control(vec2(160, 24)) end)
-    if not okc then ui.text('current key: ' .. MENU_KEY) end
-  else
-    ui.text('current key: ' .. MENU_KEY)
-  end
-  ui.separator()
-  ui.textColored('Found on this car', DIM)
-  for _, g in ipairs(GROUPS) do if scanReport[g.id] then ui.textColored(scanReport[g.id], DIM) end end
-  if nlButton('Re-scan car', 110) then
-    matCache = {}; rootCache = {}; stock = {}; plateApplied = {}; painted = {}
-    for _, g in ipairs(GROUPS) do groupMeshes(0, g.id) end
-    applyBuild(0, build)
-    say('Re-scanned')
-  end
+function tabSave()
+  ui.childWindow('##save', vec2(600, 400), false, 0, function()
+    section('this build')
+    if nlButton('Save this build', 150, GREEN) then saveBuild() end
+    ui.sameLine(0, 6)
+    if nlButton('Reset to stock', 130) then resetAll() end
+    ui.sameLine(0, 6)
+    if nlButton('Copy build code', 140) then exportCode() end
+    ui.sameLine(0, 6)
+    if nlButton('Import build code', 140) then importCode() end
+    text('Saved builds come back every time you drive this car. Build codes are text: paste them in Discord, friends import your exact look.', 9, ui.getCursor() + vec2(2, 0), DIM)
+    ui.dummy(vec2(1, 14))
+    section('sharing')
+    if nlToggle('Show my build to others', store.shareBuild, 260) then store.shareBuild = not store.shareBuild; dirty = true; dirtyTimer = 0.2 end
+    if nlToggle('Show other players\' builds', store.showOthers, 260) then
+      store.showOthers = not store.showOthers
+      for i, b in pairs(remoteBuilds) do if store.showOthers then applyBuild(i, b) else resetCar(i) end end
+    end
+    section('menu key')
+    if menuButton then
+      local okc = pcall(function() menuButton:control(vec2(160, 24)) end)
+      if not okc then ui.text('current key: ' .. MENU_KEY) end
+    else
+      ui.text('current key: ' .. MENU_KEY)
+    end
+    section('found on this car')
+    for _, g in ipairs(GROUPS) do if scanReport[g.id] then text(scanReport[g.id], 9, ui.getCursor() + vec2(2, 0), DIM); ui.dummy(vec2(1, 13)) end end
+    if nlButton('Re-scan car', 110) then
+      matCache = {}; rootCache = {}; stock = {}; plateApplied = {}; painted = {}
+      for _, g in ipairs(GROUPS) do groupMeshes(0, g.id) end
+      applyBuild(0, build)
+      say('Re-scanned')
+    end
+  end)
 end
 
-local function drawMenu()
+function drawMenu()
+    local W = 600
     local p = ui.getCursor()
-    text('NO LICENSE', 18, p, GREEN, F_BOLD)
-    text('CUSTOMS', 18, vec2(p.x + textW('NO LICENSE ', 18, F_BOLD).x, p.y), rgbm(1, 1, 1, 1), F_BOLD)
-    ui.dummy(vec2(0, 22))
-    if statusTimer > 0 then ui.textColored(status, GREEN) else ui.textColored(myCarID, DIM) end
-    ui.separator()
-    ui.tabBar('##nlc', function()
-      ui.tabItem('Paint', tabPaint)
-      ui.tabItem('Interior', tabInterior)
-      ui.tabItem('Plate', tabPlate)
-      ui.tabItem('Glow', tabGlow)
-      ui.tabItem('Looks', tabLooks)
-      ui.tabItem('Tune', tabTune)
-      ui.tabItem('Showroom', tabShowroom)
-      ui.tabItem('Save', tabSave)
-    end)
+    ui.dummy(vec2(W, 64))
+    local bc = enabled.body and pick.body or GREEN
+    pcall(function() ui.drawRectFilledMultiColor(p, p + vec2(W, 64), withA(bc, 0.22), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(bc, 0.05)) end)
+    ui.drawRectFilled(vec2(p.x, p.y + 63), vec2(p.x + W, p.y + 64), withA(bc, 0.6))
+    text('NO LICENSE', 20, vec2(p.x + 14, p.y + 12), GREEN, F_BOLD)
+    text('CUSTOMS', 20, vec2(p.x + 14 + textW('NO LICENSE ', 20, F_BOLD).x, p.y + 12), rgbm(1, 1, 1, 1), F_BOLD)
+    text(myCarID, 9, vec2(p.x + 16, p.y + 40), DIM, F_BOLD)
+    if statusTimer > 0 then
+      local sw = textW(status, 9, F_BOLD).x
+      ui.drawRectFilled(vec2(p.x + W - sw - 26, p.y + 20), vec2(p.x + W - 10, p.y + 38), withA(GREEN, 0.9), 4)
+      text(status, 9, vec2(p.x + W - sw - 18, p.y + 24), rgbm(0.04, 0.04, 0.05, 1), F_BOLD)
+    end
+    ui.setCursor(vec2(p.x, p.y + 70))
+    nlTabs('c', { 'Paint', 'Interior', 'Plate', 'Glow', 'Looks', 'Tune', 'Showroom', 'Save' }, menuUI, W)
+    local tabs = { tabPaint, tabInterior, tabPlate, tabGlow, tabLooks, tabTune, tabShowroom, tabSave }
+    if MENUTAB then menuUI.tab = MENUTAB end
+    tabs[menuUI.tab]()
 end
 
 pcall(function()
@@ -1186,8 +1370,8 @@ local function openMenu()
   local ok = pcall(function()
     ui.modalDialog('No License Customs', function()
       drawMenu()
-      ui.separator()
-      if nlButton('Close', 100) or menu.close then menu.open = false; menu.close = false; return true end
+      ui.dummy(vec2(1, 6))
+      if nlButton('Close   ' .. MENU_KEY:upper(), 120) or menu.close then menu.open = false; menu.close = false; return true end
       return false
     end, false, function() menu.open = false end)
   end)

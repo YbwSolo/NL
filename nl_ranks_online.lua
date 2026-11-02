@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.1'
+local VERSION = '4.2'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -23,6 +23,9 @@ local BACKEND = ''
 
 -- Features. true = on, false = off.
 local ENABLE_POLICE = false        -- blue circles that start a police chase
+local ENABLE_HEAT = true           -- crash a lot in a short time and the police come for you (no circles needed)
+local HEAT_CRASHES = 4             -- this many contacts...
+local HEAT_WINDOW = 45             -- ...within this many seconds = chase
 local ENABLE_RACE_ZONES = false    -- red circles that start a race lobby
 local ENABLE_FLASH_RACE = true     -- stop next to someone, both flash headlights twice = 60 s race
 local ENABLE_DAILY = true          -- 3 daily challenges
@@ -40,6 +43,8 @@ local HINT_SECONDS = 30            -- how long the "press HOME" hint stays on th
 local ENABLE_WANTED = true         -- top run on the server becomes WANTED: 1.5x xp for them, bounty xp for near-missing them
 local ENABLE_DRAFT = true          -- xp for sitting in another player's slipstream
 local ENABLE_PRESTIGE = true       -- at NO LICENSE: prestige, back to Rookie with a star and +5% xp per star
+local ENABLE_EMOTES = true         -- numpad 1-6 puts a quick message over your car for everyone
+local EMOTES = { 'GG', 'WP', 'RACE?', 'LOL', 'SORRY', 'GL' }
 
 -- Flash race
 local RACE_SECONDS = 60            -- whoever is in front when the clock hits zero wins
@@ -195,7 +200,7 @@ local store = ac.storage {
   tag = '', card = 's_default', showOthersCards = true, nameplateScale = 1.0, unlockedCards = '', newCards = '', cardsInit = false,
   loginStreak = 0, lastLoginKey = '', dailyCount = 0, bestCombo = 0,
   weekKey = '', weekNear = 0, weekKm = 0, weekWins = 0, weeklyDone = false,
-  prestige = 0, menuKey = '',
+  prestige = 0, menuKey = '', frame = 0,
 }
 
 ------------------------------------------------------------------ zones (remote json, or placed in game)
@@ -461,6 +466,7 @@ pcall(function()
     fire = ac.StructItem.byte(),
     prestige = ac.StructItem.byte(),
     top = ac.StructItem.int16(),
+    frame = ac.StructItem.byte(),
   }, function(sender, data)
     if sender == nil or sender.index == 0 then return end
     local old = others[sender.index]
@@ -468,7 +474,7 @@ pcall(function()
     local tag = tostring(data.tag or '')
     if tag == '' then tag = driverName(sender.index) end
     others[sender.index] = { rank = rank, xp = data.xp, chase = data.chase == 1, card = data.card, best = data.best, tag = tag, seen = t,
-      fire = data.fire == 1, prestige = data.prestige or 0, top = data.top or 0 }
+      fire = data.fire == 1, prestige = data.prestige or 0, top = data.top or 0, frame = data.frame or 0 }
     if old then
       if rank > old.rank and old.rank > 0 then event(tag .. ' ranked up to ' .. RANKS[rank].name:upper(), RANKS[rank].col, true) end
       if (data.prestige or 0) > (old.prestige or 0) then event(tag .. ' PRESTIGED', GOLD, true) end
@@ -482,7 +488,7 @@ broadcastRank = function()
   pcall(function()
     rankEvent({ rank = rankIndex, xp = math.floor(store.xp), chase = chaseActive and 1 or 0,
       card = CARD_INDEX[store.card] or 1, best = math.floor(sessionBest), tag = myTag():sub(1, 15),
-      fire = onFire and 1 or 0, prestige = store.prestige, top = math.floor(sessionTop) }, true)
+      fire = onFire and 1 or 0, prestige = store.prestige, top = math.floor(sessionTop), frame = store.frame }, true)
   end)
 end
 
@@ -568,10 +574,11 @@ local function milestoneCheck()
   end
 end
 
------------------------------------------------------------------- flash race (stop next to someone, both flash twice)
+------------------------------------------------------------------ flash race (flash your lights at someone, they get an accept / decline popup)
 
-local duel = { state = 'idle', opp = -1, timer = 0, time = 0, toast = nil, result = nil, oppResult = nil, start = nil, falseStart = false }
-local flash = { edges = {}, lastHigh = false, lastHead = false, sentAt = -10, sentTo = -1, incoming = {} }
+local duel = { state = 'idle', opp = -1, timer = 0, time = 0, toast = nil, result = nil, oppResult = nil, falseStart = false,
+  flipTimer = 0, resend = 0, resendLeft = 0, lastMsg = nil, ackd = false, hb = 0, oppSeen = 0, ahead = 0 }
+local flash = { edges = {}, lastHigh = false, lastHead = false, sentAt = -10, sentTo = -1, pendingFrom = -1, pendingAt = -10, popup = false }
 local duelEvent = nil
 
 -- car indices differ from player to player, session IDs do not
@@ -581,21 +588,34 @@ local function sessionOf(i)
   return id
 end
 
+-- kinds: 1 challenge, 2 accept, 3 cancel/decline, 4 verdict at the line, 5 flipped out, 6 heartbeat, 7 ack
 local function duelSend(kind, oppIndex, value)
   if not duelEvent then return end
   pcall(function() duelEvent({ kind = kind, target = sessionOf(oppIndex), value = value or 0 }, false) end)
 end
 
+-- important messages are repeated until the other side acks them
+local function duelSendReliable(kind, oppIndex, value)
+  duelSend(kind, oppIndex, value)
+  duel.lastMsg = { kind = kind, opp = oppIndex, value = value }
+  duel.resendLeft = 6
+  duel.resend = 0.5
+  duel.ackd = false
+end
+
 local function duelReset()
-  if duel.toast then pcall(function() duel.toast = nil end) end
-  duel = { state = 'idle', opp = -1, timer = 0, time = 0, toast = nil, result = nil, oppResult = nil, start = nil, falseStart = false }
+  duel = { state = 'idle', opp = -1, timer = 0, time = 0, toast = nil, result = nil, oppResult = nil, falseStart = false,
+    flipTimer = 0, resend = 0, resendLeft = 0, lastMsg = nil, ackd = false, hb = 0, oppSeen = 0, ahead = 0 }
 end
 
 local function duelCancel(byMe, quiet)
   if duel.state == 'idle' then return end
-  if byMe then duelSend(3, duel.opp, 0) end
-  if not quiet then showBanner('RACE CANCELLED', byMe and '' or (driverName(duel.opp) .. ' backed out'), rgbm(0.7, 0.72, 0.78, 1), 2.5) end
+  local opp = duel.opp
+  if byMe then duelSendReliable(3, opp, 0) end
+  if not quiet then showBanner('RACE CANCELLED', byMe and '' or (driverName(opp) .. ' backed out'), rgbm(0.7, 0.72, 0.78, 1), 2.5) end
+  local keep = duel.lastMsg
   duelReset()
+  if byMe then duel.lastMsg = keep; duel.resendLeft = 4; duel.resend = 0.5 end
 end
 
 local function duelStart(opp)
@@ -603,7 +623,8 @@ local function duelStart(opp)
   duel.state = 'ready'
   duel.opp = opp
   duel.timer = RACE_GET_READY
-  flash.incoming[opp] = nil
+  duel.oppSeen = t
+  flash.pendingFrom = -1
   store.duels = store.duels + 1
   showBanner('RACE', 'vs ' .. driverName(opp) .. '   get in position', COL_RACE, 3)
   hud.lastEvent = t
@@ -635,33 +656,67 @@ local function duelFinish(mine, theirs)
   duelReset()
 end
 
+-- the accept / decline popup
+local function showChallenge(idx)
+  flash.pendingFrom = idx
+  flash.pendingAt = t
+  hud.lastEvent = t
+  if flash.popup then return end
+  flash.popup = true
+  local ok = pcall(function()
+    ui.modalPopup('Race challenge', driverName(idx) .. ' wants to race you.\n' .. RACE_GET_READY .. ' seconds to line up, then ' .. RACE_SECONDS .. ' seconds. Whoever is in front at the end wins.\nFlip your car and you lose.',
+      'Accept', 'Decline', nil, nil, function(accepted)
+        flash.popup = false
+        if accepted and flash.pendingFrom == idx and duel.state == 'idle' then
+          duelSendReliable(2, idx, 0)
+          duelStart(idx)
+        else
+          duelSend(3, idx, 0)
+          flash.pendingFrom = -1
+        end
+      end)
+  end)
+  if not ok then
+    flash.popup = false
+    event(driverName(idx) .. ' wants a race   flash twice to accept', COL_RACE, true)
+  end
+end
+
 pcall(function()
   duelEvent = ac.OnlineEvent({
-    ac.StructItem.key('NLFlashRace3'),
+    ac.StructItem.key('NLFlashRace4'),
     kind = ac.StructItem.byte(), target = ac.StructItem.byte(), value = ac.StructItem.float(),
   }, function(sender, data)
     if sender == nil or sender.index == 0 or not ENABLE_FLASH_RACE then return end
     local idx = sender.index
-    if data.target ~= sessionOf(0) then return end   -- not for me
-    if data.kind == 1 then                        -- they flashed at me
+    if data.target ~= sessionOf(0) then return end
+    if data.kind == 7 then
+      if duel.lastMsg and duel.lastMsg.opp == idx then duel.ackd = true; duel.resendLeft = 0 end
+      return
+    end
+    if data.kind == 6 then
+      if duel.opp == idx then duel.oppSeen = t end
+      return
+    end
+    duelSend(7, idx, data.kind)   -- ack everything else
+    if data.kind == 1 then                        -- they flashed at me: popup
       if duel.state == 'idle' then
-        if flash.sentTo == idx and t - flash.sentAt < 8 then
-          duelSend(2, idx, 0)
+        if flash.sentTo == idx and t - flash.sentAt < 10 then
+          duelSendReliable(2, idx, 0)
           duelStart(idx)
-        else
-          flash.incoming[idx] = t
-          event(driverName(idx) .. ' wants a race   flash twice to accept', COL_RACE, true)
-          hud.lastEvent = t
+        elseif flash.pendingFrom ~= idx then
+          showChallenge(idx)
         end
       end
-    elseif data.kind == 2 then                    -- they accepted my flash
+    elseif data.kind == 2 then                    -- they accepted
       if duel.state == 'idle' and flash.sentTo == idx then duelStart(idx) end
-    elseif data.kind == 3 then                    -- they cancelled
-      if duel.state ~= 'idle' and duel.opp == idx then duelCancel(false) end
+    elseif data.kind == 3 then                    -- they declined / cancelled
+      if duel.state ~= 'idle' and duel.opp == idx then duelCancel(false)
+      elseif flash.sentTo == idx and t - flash.sentAt < 20 then flash.sentTo = -1; event(driverName(idx) .. ' declined', rgbm(0.7, 0.72, 0.78, 1), true) end
     elseif data.kind == 4 then                    -- their verdict at the line
       if duel.state == 'racing' and duel.opp == idx then duel.oppResult = data.value end
-    elseif data.kind == 5 then                    -- they crashed out
-      if duel.state == 'racing' and duel.opp == idx then
+    elseif data.kind == 5 then                    -- they flipped
+      if duel.state == 'racing' and duel.opp == idx and duel.result == nil then
         duel.result = 1
         duelFinish(1, -1)
       end
@@ -685,16 +740,17 @@ local function detectFlash(me)
   return false
 end
 
-local function carBesideMe(me)
+-- nearest player in front of or beside me within 30 m
+local function carNearMe(me)
   local sim = ac.getSim()
   local best, bestD = nil, 1e9
   for i = 1, sim.carsCount - 1 do
     local c = ac.getCar(i)
-    if c and c.isConnected and c.speedKmh < 8 then
+    if c and c.isConnected then
       local rel = c.position - me.position
-      local lon, lat = math.abs(rel:dot(me.look)), math.abs(rel:dot(me.side))
-      if lon < 9 and lat < 7 and math.abs(rel.y) < 4 then
-        local d = lon + lat
+      local lon, lat = rel:dot(me.look), math.abs(rel:dot(me.side))
+      if lon > -8 and lon < 30 and lat < 8 and math.abs(rel.y) < 5 then
+        local d = math.abs(lon) + lat
         if d < bestD then best, bestD = i, d end
       end
     end
@@ -702,30 +758,60 @@ local function carBesideMe(me)
   return best
 end
 
+local function isFlipped(car)
+  local upY = 1
+  pcall(function() upY = car.up.y end)
+  return upY < 0.15
+end
+
 local function duelUpdate(dt, me)
   if not ENABLE_FLASH_RACE then return end
   local speed = me.speedKmh
+  -- reliable resend
+  if duel.resendLeft > 0 and duel.lastMsg and not duel.ackd then
+    duel.resend = duel.resend - dt
+    if duel.resend <= 0 then
+      duel.resend = 0.6
+      duel.resendLeft = duel.resendLeft - 1
+      duelSend(duel.lastMsg.kind, duel.lastMsg.opp, duel.lastMsg.value)
+    end
+  end
+  if flash.pendingFrom >= 0 and t - flash.pendingAt > 25 then flash.pendingFrom = -1 end
+
   if duel.state == 'idle' then
-    if speed < 8 and detectFlash(me) then
-      local opp = carBesideMe(me)
+    if speed < 60 and detectFlash(me) then
+      local opp = carNearMe(me)
       if opp then
-        if flash.incoming[opp] and t - flash.incoming[opp] < 12 then
-          duelSend(2, opp, 0)
+        if flash.pendingFrom == opp then
+          duelSendReliable(2, opp, 0)
           duelStart(opp)
         else
           flash.sentAt, flash.sentTo = t, opp
-          duelSend(1, opp, 0)
-          event('race offered to ' .. driverName(opp) .. '   waiting for their flash', COL_RACE, true)
+          duelSendReliable(1, opp, 0)
+          showBanner('CHALLENGE SENT', 'waiting for ' .. driverName(opp), COL_RACE, 3)
         end
+      else
+        event('nobody close enough to challenge', rgbm(0.7, 0.72, 0.78, 1))
       end
     end
     return
   end
+
   hud.lastEvent = t
   local opp = ac.getCar(duel.opp)
   if not opp or not opp.isConnected then duelCancel(false, true); return end
   pcall(function() if ui.keyboardButtonPressed(ui.KeyIndex.Back) then duelCancel(true) end end)
   if duel.state == 'idle' then return end
+
+  -- heartbeat so both sides know the other is still in it
+  duel.hb = duel.hb + dt
+  if duel.hb > 1 then duel.hb = 0; duelSend(6, duel.opp, 0) end
+  if t - duel.oppSeen > 15 and duel.state ~= 'ready' then
+    showBanner('RACE OVER', driverName(duel.opp) .. ' dropped out', rgbm(0.7, 0.72, 0.78, 1), 3)
+    duelReset()
+    return
+  end
+
   if duel.state == 'ready' then
     duel.timer = duel.timer - dt
     if duel.timer <= 0 then
@@ -744,21 +830,33 @@ local function duelUpdate(dt, me)
       duel.state = 'racing'
       duel.time = 0
       duel.result, duel.oppResult = nil, nil
-      showBanner('GO', RACE_SECONDS .. ' seconds. be in front when it ends', GREEN, 2)
+      showBanner('GO', RACE_SECONDS .. ' seconds. be in front when it ends. flip = loss', GREEN, 2)
     end
   elseif duel.state == 'racing' then
     duel.time = duel.time + dt
+    -- live gap, shared direction so both cars judge it the same way
+    local L = me.look + opp.look
+    if L:length() < 0.01 then L = me.look end
+    L = L:normalize()
+    duel.ahead = (me.position - opp.position):dot(L)
+    if duel.falseStart then duel.ahead = duel.ahead - 15 end
+    -- flipping loses it
+    if isFlipped(me) then duel.flipTimer = duel.flipTimer + dt else duel.flipTimer = 0 end
+    if duel.flipTimer > 1.0 and duel.result == nil then
+      duel.result = -1
+      duelSendReliable(5, duel.opp, 0)
+      showBanner('YOU LOST', 'you flipped it', RED, 3)
+      addXP(XP.duelLose, 'raced', rgbm(0.7, 0.72, 0.78, 1))
+      local keep = duel.lastMsg
+      duelReset()
+      duel.lastMsg = keep; duel.resendLeft = 5; duel.resend = 0.5
+      return
+    end
     if duel.time >= RACE_SECONDS and duel.result == nil then
-      -- shared direction so both cars judge it the same way
-      local L = me.look + opp.look
-      if L:length() < 0.01 then L = me.look end
-      L = L:normalize()
-      local ahead = (me.position - opp.position):dot(L)
-      if duel.falseStart then ahead = ahead - 15 end
-      local mine = ahead > 2 and 1 or (ahead < -2 and -1 or 0)
+      local mine = duel.ahead > 2 and 1 or (duel.ahead < -2 and -1 or 0)
       duel.result = mine
-      duelSend(4, duel.opp, mine)
-      duel.timer = 2.0
+      duelSendReliable(4, duel.opp, mine)
+      duel.timer = 3.0
     elseif duel.result ~= nil then
       duel.timer = duel.timer - dt
       if duel.oppResult ~= nil or duel.timer <= 0 then duelFinish(duel.result, duel.oppResult) end
@@ -766,15 +864,9 @@ local function duelUpdate(dt, me)
   end
 end
 
+-- crashing no longer ends a race; only a flip does. a crash during line-up cancels it.
 local function duelCrash()
-  if duel.state == 'racing' and duel.result == nil then
-    duelSend(5, duel.opp, 0)
-    showBanner('YOU LOST', 'crashed during the race', RED, 3)
-    addXP(XP.duelLose, 'raced', rgbm(0.7, 0.72, 0.78, 1))
-    duelReset()
-  elseif duel.state == 'ready' or duel.state == 'count' then
-    duelCancel(true)
-  end
+  if duel.state == 'ready' or duel.state == 'count' then duelCancel(true) end
 end
 
 ------------------------------------------------------------------ calling cards, login streak, weekly
@@ -993,11 +1085,29 @@ local function trailPointAt(ago)
   return tr[1].p
 end
 
+local heat = { crashes = {} }
+local function heatCrash(me)
+  if not ENABLE_HEAT or chase.state ~= 'idle' then return end
+  heat.crashes[#heat.crashes + 1] = t
+  while #heat.crashes > 0 and t - heat.crashes[1] > HEAT_WINDOW do table.remove(heat.crashes, 1) end
+  local n = #heat.crashes
+  if n >= HEAT_CRASHES then
+    heat.crashes = {}
+    chase.state = 'countdown'
+    chase.zone = nil
+    chase.countdown = 3.0
+    chase.time = 0
+    showBanner('HEAT', 'too much contact. police on you in 3. drive', rgbm(0.3, 0.5, 1, 1), 3)
+  elseif n == HEAT_CRASHES - 1 then
+    event('HEAT RISING   one more and the police come', rgbm(0.4, 0.6, 1, 1), true)
+  end
+end
+
 local function chaseUpdate(dt, me)
-  if not ENABLE_POLICE then return end
+  if not (ENABLE_POLICE or ENABLE_HEAT) then return end
   local speed = me.speedKmh
   if chase.state == 'idle' then
-    for _, z in ipairs(ZONES.chase) do
+    for _, z in ipairs(ENABLE_POLICE and ZONES.chase or {}) do
       if inZone(z, me.position) and speed > 15 then
         chase.state = 'countdown'
         chase.zone = z
@@ -1018,7 +1128,8 @@ local function chaseUpdate(dt, me)
       broadcastRank()
       spawnUnit(me)
       spawnUnit(me, 1.5)
-      showBanner('CHASE ON', 'lose them. crashing brings more units', rgbm(0.3, 0.5, 1, 1), 2.5)
+      chase.pinTimer = 0
+      showBanner('CHASE ON', 'lose them. they will try to ram you and pin you in', rgbm(0.3, 0.5, 1, 1), 2.5)
     end
     return
   end
@@ -1038,15 +1149,28 @@ local function chaseUpdate(dt, me)
     else u.delay = math.max(0.5, u.delay - dt * 0.35) end
     u.delay = math.min(u.delay, 25)
     local target = trailPointAt(u.delay + 0.3 * (i - 1))
+    local gap = flatDist(u.pos, me.position)
+    local aggressive = gap < 28
+    if aggressive then
+      -- close enough: go for the car itself. odd units ram the back, even units come up the side to pin
+      local side = (i % 2 == 0) and 1.9 or -1.9
+      if i == 1 then target = me.position - me.look * 1.5
+      else target = me.position + me.look * 1.0 + me.side * side end
+    end
     if target then
       local d = target - u.pos
       local dist = d:length()
       if dist > 0.05 then
-        local step = math.min(dist, (speed / 3.6 + 12) * dt * 1.4)
+        local step = math.min(dist, (speed / 3.6 + (aggressive and 22 or 12)) * dt * (aggressive and 1.9 or 1.4))
         u.pos = u.pos + d * (step / dist)
-        local dl = vec3(d.x, 0, d.z)
+        local dl = aggressive and vec3(me.look.x, 0, me.look.z) or vec3(d.x, 0, d.z)
         if dl:length() > 0.2 then u.look = dl:normalize() end
       end
+    end
+    if gap < 5 and t - (u.lastBump or -10) > 2.5 then
+      u.lastBump = t
+      event(i == 1 and 'RAMMED' or 'PINNED IN', rgbm(0.4, 0.6, 1, 1))
+      hud.lastEvent = t
     end
     u.flash = u.flash + dt * 9
     local blue = math.floor(u.flash) % 2 == 0
@@ -1059,6 +1183,16 @@ local function chaseUpdate(dt, me)
     nearest = math.min(nearest, flatDist(u.pos, me.position))
   end
   chase.nearest = nearest
+  -- boxed in and slow = busted
+  if nearest < 6 and speed < 35 then chase.pinTimer = (chase.pinTimer or 0) + dt else chase.pinTimer = 0 end
+  if (chase.pinTimer or 0) > 3 then
+    store.busts = store.busts + 1
+    showBanner('BUSTED', 'pinned in   ' .. XP.busted .. ' xp', rgbm(1, 0.3, 0.25, 1), 4)
+    addXP(XP.busted, 'busted', rgbm(1, 0.3, 0.25, 1), true)
+    endRun(true)
+    chaseReset()
+    return
+  end
   if nearest > 260 then chase.farTimer = chase.farTimer + dt else chase.farTimer = 0 end
   if chase.farTimer > 5 or chase.time > 300 then
     local bonus = XP.escape + XP.escapePerUnit * #chase.units + math.max(0, 120 - chase.time)
@@ -1195,7 +1329,6 @@ end
 
 local checkTimer = 0
 local function update(dt)
-  t = t + dt
   local me = ac.getCar(0)
   if not me then return end
   local speed = me.speedKmh
@@ -1256,6 +1389,7 @@ local function update(dt)
     endRun(true)
     run.lostAmount = -(addXP(-loss, 'CRASHED', RED, true) or 0)
     chaseCrash(me)
+    heatCrash(me)
     duelCrash()
   end
 
@@ -1396,34 +1530,87 @@ local function update(dt)
   if saveTimer > 60 then saveTimer = 0; backendSave() end
 end
 
-local started, startTimer, syncTimer = false, 1.0, 0
+------------------------------------------------------------------ emotes
+
+local emoteEvent = nil
+pcall(function()
+  emoteEvent = ac.OnlineEvent({ ac.StructItem.key('NLEmote4'), idx = ac.StructItem.byte() }, function(sender, data)
+    if sender == nil or sender.index == 0 then return end
+    local o = others[sender.index]
+    if o then o.emote = EMOTES[data.idx] or '?'; o.emoteT = t end
+  end)
+end)
+local myEmote = { text = nil, t = -10 }
+local function sendEmote(i)
+  if not emoteEvent or not EMOTES[i] then return end
+  pcall(function() emoteEvent({ idx = i }, false) end)
+  myEmote = { text = EMOTES[i], t = t }
+  event(EMOTES[i], rgbm(1, 1, 1, 1), true)
+end
+
+------------------------------------------------------------------ start
+
+local started, startTimer, syncTimer, startFails = false, 1.5, 0, 0
+local promptsDue = -1
+
+local function startup()
+  rankIndex = rankFor(store.xp)
+  backendLoad()
+  if ENABLE_POLICE or ENABLE_RACE_ZONES then loadRemoteZones() end
+  dailyRefresh()
+  weeklyRefresh()
+  if not store.cardsInit then cardCheck(true); store.cardsInit = true else cardCheck(true) end
+  broadcastRank()
+  promptsDue = t + 5        -- popups wait until the player is actually in the car
+  started = true
+  dlog('v' .. VERSION .. ' started, ' .. RANKS[rankIndex].name .. ' ' .. math.floor(store.xp) .. ' xp')
+end
+
+local function latePrompts()
+  promptsDue = -1
+  loginCheck()
+  askName()
+  menu.hintT = HINT_SECONDS
+  if ENABLE_DAILY and #daily.list > 0 then
+    local parts = {}
+    for _, c in ipairs(daily.list) do parts[#parts + 1] = c.text .. (hasFlag(store.dailyDone, c.id) and ' (done)' or '') end
+    showBanner('TODAY\'S CHALLENGES', table.concat(parts, '   |   '), GOLD, 8)
+  end
+  pcall(function() ui.toast(ui.Icons and ui.Icons.Trophy or 'fx:loading', 'No License Ranks v' .. VERSION .. ' loaded. Press ' .. MENU_KEY:upper() .. ' for the menu.') end)
+end
 
 function script.update(dt)
+  t = t + dt
   if not started then
     startTimer = startTimer - dt
     if startTimer <= 0 then
-      started = true
-      rankIndex = rankFor(store.xp)
-      backendLoad()
-      if ENABLE_POLICE or ENABLE_RACE_ZONES then loadRemoteZones() end
-      dailyRefresh()
-      weeklyRefresh()
-      if not store.cardsInit then cardCheck(true); store.cardsInit = true else cardCheck(true) end
-      loginCheck()
-      askName()
-      menu.hintT = HINT_SECONDS
-      if ENABLE_DAILY and #daily.list > 0 then
-        local parts = {}
-        for _, c in ipairs(daily.list) do parts[#parts + 1] = c.text .. (hasFlag(store.dailyDone, c.id) and ' (done)' or '') end
-        showBanner('TODAY\'S CHALLENGES', table.concat(parts, '   |   '), GOLD, 8)
+      local ok, err = pcall(startup)
+      if not ok then
+        startFails = startFails + 1
+        dlog('startup error (' .. startFails .. '): ' .. tostring(err))
+        startTimer = 3
+        if startFails >= 4 then started = true; promptsDue = t + 3 end
       end
-      broadcastRank()
-      dlog('v' .. VERSION .. ' started, ' .. RANKS[rankIndex].name .. ' ' .. math.floor(store.xp) .. ' xp')
     end
     return
   end
+  if promptsDue >= 0 and t >= promptsDue then
+    local paused = false
+    pcall(function() local sim = ac.getSim(); paused = sim.isPaused or sim.isInMainMenu end)
+    if not paused then
+      local ok, err = pcall(latePrompts)
+      if not ok then dlog('prompts error: ' .. tostring(err)); promptsDue = -1 end
+    end
+  end
   local ok, err = pcall(update, dt)
   if not ok and lastErr ~= tostring(err) then lastErr = tostring(err); dlog('error: ' .. lastErr) end
+  if ENABLE_EMOTES then
+    pcall(function()
+      for i = 1, #EMOTES do
+        if ui.keyboardButtonPressed(ui.KeyIndex['NumPad' .. i]) then sendEmote(i) end
+      end
+    end)
+  end
   syncTimer = syncTimer + dt
   if syncTimer > 30 then syncTimer = 0; broadcastRank() end
 end
@@ -1477,41 +1664,41 @@ end
 local F_BOLD = 'Bahnschrift;Weight=Bold'
 local F_MED = 'Bahnschrift;Weight=SemiBold'
 
-local function fmtK(n)
+function fmtK(n)
   n = math.floor(n)
   if n >= 100000 then return string.format('%dK', math.floor(n / 1000)) end
   if n >= 1000 then return string.format('%.1fK', n / 1000) end
   return tostring(n)
 end
 
-local function text(txt, size, pos, col, font)
+function text(txt, size, pos, col, font)
   ui.pushDWriteFont(font or F_MED)
   ui.dwriteDrawText(txt, size, pos, col)
   ui.popDWriteFont()
 end
 
-local function textW(txt, size, font)
+function textW(txt, size, font)
   ui.pushDWriteFont(font or F_MED)
   local w = ui.measureDWriteText(txt, size)
   ui.popDWriteFont()
   return w
 end
 
-local function textC(txt, size, cx, y, col, font)
+function textC(txt, size, cx, y, col, font)
   local w = textW(txt, size, font)
   text(txt, size, vec2(cx - w.x / 2, y), col, font)
   return w
 end
 
-local function easeOutBack(x)
+function easeOutBack(x)
   local c1, c3 = 1.70158, 2.70158
   return 1 + c3 * (x - 1) ^ 3 + c1 * (x - 1) ^ 2
 end
 
-local function mix(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
+function mix(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
 
 -- small dark tile with a grey label and a white value
-local function tile(x, y, w, h, A, value, label, valCol, s, outline)
+function tile(x, y, w, h, A, value, label, valCol, s, outline)
   ui.drawRectFilled(vec2(x, y), vec2(x + w, y + h), rgbm(0.04, 0.045, 0.055, 0.82 * A), 5 * s)
   if outline then ui.drawRect(vec2(x, y), vec2(x + w, y + h), withA(outline, 0.9 * A), 5 * s, ui.CornerFlags.All, 1.5 * s) end
   if label then
@@ -1522,16 +1709,29 @@ local function tile(x, y, w, h, A, value, label, valCol, s, outline)
   end
 end
 
-local function drawCardImage(c, p1, p2, col)
+function drawCardImage(c, p1, p2, col)
   if not c then return end
   local uv1, uv2 = cardUV(c)
   if uv1 then ui.drawImage(cardSrc(c), p1, p2, col, uv1, uv2) else ui.drawImage(cardSrc(c), p1, p2, col) end
 end
 
 -- the plate: card as the background, badge on the left, name + rank over it. k = scale, a = alpha
-local function drawNameplate(cx, cy, k, a, name, R, card, isTop, prestige, wanted, fire)
+function drawEmote(cx, y, k, txt, age)
+  local a = math.min(1, age * 4) * math.min(1, (3.2 - age) * 2)
+  if a <= 0 then return end
+  local size = 13 * k
+  local tw = textW(txt, size, F_BOLD).x
+  local pw, ph = tw + 16 * k, size + 10 * k
+  local rise = math.min(1, age * 3) * 6 * k
+  local x0, y0 = cx - pw / 2, y - ph - 6 * k - rise
+  ui.drawRectFilled(vec2(x0, y0), vec2(x0 + pw, y0 + ph), rgbm(1, 1, 1, 0.95 * a), ph / 2)
+  text(txt, size, vec2(x0 + 8 * k, y0 + 5 * k), rgbm(0.05, 0.05, 0.06, a), F_BOLD)
+end
+
+function drawNameplate(cx, cy, k, a, name, R, card, isTop, prestige, wanted, fire, emote, emoteAge, frame)
   local W, H = 150 * k, 37.5 * k
   local x, y = cx - W / 2, cy - H - 10 * k
+  if emote and emoteAge and emoteAge < 3.2 then drawEmote(cx, y - ((wanted or fire or isTop) and 14 * k or 0), k, emote, emoteAge) end
   if card then
     drawCardImage(card, vec2(x, y), vec2(x + W, y + H), rgbm(1, 1, 1, a))
   else
@@ -1542,7 +1742,7 @@ local function drawNameplate(cx, cy, k, a, name, R, card, isTop, prestige, wante
     ui.drawRectFilledMultiColor(vec2(x, y), vec2(x + W * 0.75, y + H), rgbm(0, 0, 0, 0.72 * a), rgbm(0, 0, 0, 0, 0), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0.72 * a))
   end)
   if not ok then ui.drawRectFilled(vec2(x, y), vec2(x + W * 0.6, y + H), rgbm(0, 0, 0, 0.5 * a)) end
-  ui.drawRect(vec2(x, y), vec2(x + W, y + H), withA(R.col, 0.9 * a), 3 * k, ui.CornerFlags.All, 1.2 * k)
+  ui.drawRect(vec2(x, y), vec2(x + W, y + H), withA(frameColour(frame, R), 0.9 * a), 3 * k, ui.CornerFlags.All, 1.2 * k)
   local ic = 26 * k
   local bx, by = x + 5 * k, y + (H - ic) / 2
   ui.drawCircleFilled(vec2(bx + ic / 2, by + ic / 2), ic * 0.58, rgbm(0, 0, 0, 0.45 * a), 20)
@@ -1759,7 +1959,7 @@ function script.drawUI(dt)
           if ok and sp and sp.x and sp.x > -200 and sp.x < sw + 200 and sp.y > -100 and sp.y < sh + 100 then
             local fade = math.min(1, (160 - d) / 40)
             local k = math.max(0.5, 1 - d / 240) * store.nameplateScale
-            drawNameplate(sp.x, sp.y, k, fade, o.tag or driverName(idx), RANKS[o.rank], CARDS[o.card or 0], o.best and topBest > 0 and o.best == topBest, o.prestige, idx == wantedIndex, o.fire)
+            drawNameplate(sp.x, sp.y, k, fade, o.tag or driverName(idx), RANKS[o.rank], CARDS[o.card or 0], o.best and topBest > 0 and o.best == topBest, o.prestige, idx == wantedIndex, o.fire, o.emote, o.emoteT and (t - o.emoteT) or nil, o.frame)
           end
         end
       end
@@ -1769,7 +1969,7 @@ end
 
 ------------------------------------------------------------------ menu (CSP online extras > No License Ranks)
 
-local function addLocalZone(kind, me)
+function addLocalZone(kind, me)
   local p = me.position
   local name = store.zoneName ~= '' and store.zoneName or (kind == 'chase' and ('Police ' .. (#ZONES.chase + 1)) or ('Race ' .. (#ZONES.race + 1)))
   local z = normZone({ name = name, x = p.x, y = p.y, z = p.z, r = store.zoneR }, kind == 'race')
@@ -1779,219 +1979,385 @@ local function addLocalZone(kind, me)
   dlog('placed ' .. kind .. ' zone ' .. name)
 end
 
-local menuUI = { nameEdit = nil }
-local function nlButton(label, w, accent, h)
-  h = h or 26
+local menuUI = { nameEdit = nil, tab = 1, tabX = 0, tabW = 0 }
+local DIM = rgbm(0.5, 0.5, 0.55, 1)
+local PANEL = rgbm(0.07, 0.075, 0.09, 1)
+
+-- tiny animation helper: values ease towards a target every frame, so hovers and tabs feel alive
+local anim = {}
+function ease(id, target, speed)
+  local dt = 0.016
+  pcall(function() dt = math.min(0.1, ac.getSim().dt or 0.016) end)
+  local v = anim[id]
+  if v == nil then v = target end
+  v = v + (target - v) * math.min(1, dt * (speed or 14))
+  anim[id] = v
+  return v
+end
+
+function lerpC(a, b, f) return rgbm(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, a.mult + (b.mult - a.mult) * f) end
+
+function nlButton(label, w, accent, h)
+  h = h or 28
   local p = ui.getCursor()
   ui.invisibleButton('##b' .. label, vec2(w, h))
   local hov = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
-  ui.drawRectFilled(p, p + vec2(w, h), accent and withA(accent, hov and 1 or 0.85) or rgbm(1, 1, 1, hov and 0.16 or 0.08), 4)
+  local f = ease('b' .. label, hov and 1 or 0)
+  if accent then
+    ui.drawRectFilled(p, p + vec2(w, h), withA(accent, 0.8 + 0.2 * f), 5)
+    ui.drawRectFilled(vec2(p.x, p.y + h - 2), vec2(p.x + w, p.y + h), rgbm(0, 0, 0, 0.25), 1)
+  else
+    ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.07 + 0.1 * f), 5)
+    ui.drawRect(p, p + vec2(w, h), rgbm(1, 1, 1, 0.08 + 0.3 * f), 5, ui.CornerFlags.All, 1)
+  end
   local tw = textW(label, 11, F_BOLD)
-  text(label, 11, vec2(p.x + (w - tw.x) / 2, p.y + (h - 13) / 2), accent and rgbm(0.04, 0.04, 0.05, 1) or rgbm(1, 1, 1, 1), F_BOLD)
+  text(label, 11, vec2(p.x + (w - tw.x) / 2, p.y + (h - 13) / 2), accent and rgbm(0.04, 0.04, 0.05, 1) or rgbm(1, 1, 1, 0.85 + 0.15 * f), F_BOLD)
   return clicked
 end
-local DIM = rgbm(0.5, 0.5, 0.55, 1)
-local PANEL = rgbm(0.07, 0.075, 0.09, 1)
 
-local function isTopRun()
+-- section label with a little accent line
+function section(label, col)
+  local p = ui.getCursor()
+  ui.dummy(vec2(10, 18))
+  ui.drawRectFilled(vec2(p.x, p.y + 4), vec2(p.x + 3, p.y + 14), col or GOLD, 1)
+  text(label:upper(), 9, vec2(p.x + 9, p.y + 3), rgbm(0.75, 0.77, 0.82, 1), F_BOLD)
+end
+
+-- custom tab bar: flat labels, sliding underline
+function nlTabs(id, labels, state, w)
+  local p = ui.getCursor()
+  local h = 30
+  ui.dummy(vec2(w, h + 6))
+  ui.drawRectFilled(vec2(p.x, p.y + h), vec2(p.x + w, p.y + h + 1), rgbm(1, 1, 1, 0.08))
+  local x = p.x
+  local selX, selW = p.x, 40
+  for i, label in ipairs(labels) do
+    local tw = textW(label, 11, F_BOLD).x
+    local bw = tw + 26
+    ui.setCursor(vec2(x, p.y))
+    ui.invisibleButton('##tab' .. id .. i, vec2(bw, h))
+    local hov = ui.itemHovered()
+    if ui.itemClicked(ui.MouseButton.Left) then state.tab = i end
+    local sel = state.tab == i
+    local f = ease('tab' .. id .. i, (sel and 1 or (hov and 0.5 or 0)))
+    text(label, 11, vec2(x + 13, p.y + 9), lerpC(rgbm(0.6, 0.62, 0.68, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
+    if sel then selX, selW = x + 8, bw - 16 end
+    x = x + bw
+  end
+  state.tabX = ease('tabx' .. id, selX, 18)
+  state.tabW = ease('tabw' .. id, selW, 18)
+  ui.drawRectFilled(vec2(state.tabX, p.y + h - 2), vec2(state.tabX + state.tabW, p.y + h + 1), GOLD, 1)
+  ui.setCursor(vec2(p.x, p.y + h + 8))
+end
+
+-- a dark row card
+function rowBox(w, h, hovId)
+  local p = ui.getCursor()
+  local f = hovId and ease(hovId, ui.itemHovered() and 1 or 0) or 0
+  ui.drawRectFilled(p, p + vec2(w, h), rgbm(1, 1, 1, 0.05 + 0.04 * f), 6)
+  return p
+end
+
+function isTopRun()
   if sessionBest <= 0 then return false end
   for _, o in pairs(others) do if o.best and o.best > sessionBest then return false end end
   return true
 end
 
 -- one card tile. returns true when clicked
-local function cardTile(i, c, w, h, showName)
-  local p = ui.getCursor()
-  ui.invisibleButton('##card' .. i, vec2(w, h + (showName and 14 or 0)))
+function cardTile(i, c, w, h, showName)
+  local p0 = ui.getCursor()
+  ui.invisibleButton('##card' .. i, vec2(w, h + (showName and 16 or 0)))
   local hovered = ui.itemHovered()
   local clicked = ui.itemClicked(ui.MouseButton.Left)
   local unlocked = cardUnlocked(c)
   local selected = store.card == c.id
-  drawCardImage(c, p, p + vec2(w, h), unlocked and rgbm(1, 1, 1, 1) or rgbm(0.28, 0.28, 0.3, 1))
+  local f = ease('card' .. i, hovered and 1 or 0)
+  local grow = 3 * f
+  local p = vec2(p0.x - grow, p0.y - grow)
+  local q = vec2(p0.x + w + grow, p0.y + h + grow)
+  if f > 0.01 then ui.drawRectFilled(vec2(p.x - 2, p.y + 4), vec2(q.x + 2, q.y + 6), rgbm(0, 0, 0, 0.35 * f), 6) end
+  drawCardImage(c, p, q, unlocked and rgbm(1, 1, 1, 1) or rgbm(0.22, 0.22, 0.25, 1))
   if not unlocked then
     local lt = cardLockText(c)
     local lw = textW(lt, 9, F_BOLD).x
-    text(lt, 9, vec2(p.x + (w - lw) / 2, p.y + h / 2 - 10), rgbm(0.9, 0.9, 0.92, 1), F_BOLD)
+    ui.drawRectFilled(vec2(p.x, q.y - 16), q, rgbm(0, 0, 0, 0.55), 3)
+    text(lt, 9, vec2(p.x + (w - lw) / 2 + grow, q.y - 14), rgbm(0.92, 0.92, 0.95, 1), F_BOLD)
     local pr = cardProgress(c)
-    ui.drawRectFilled(vec2(p.x + 10, p.y + h / 2 + 5), vec2(p.x + w - 10, p.y + h / 2 + 8), rgbm(1, 1, 1, 0.15), 1)
-    ui.drawRectFilled(vec2(p.x + 10, p.y + h / 2 + 5), vec2(p.x + 10 + (w - 20) * pr, p.y + h / 2 + 8), GOLD, 1)
+    ui.drawRectFilled(vec2(p.x + 8, q.y - 3), vec2(q.x - 8, q.y - 1), rgbm(1, 1, 1, 0.15), 1)
+    ui.drawRectFilled(vec2(p.x + 8, q.y - 3), vec2(p.x + 8 + (w + 2 * grow - 16) * pr, q.y - 1), GOLD, 1)
+    local lk = 'LOCKED'
+    text(lk, 7, vec2(p.x + 6, p.y + 5), rgbm(0.8, 0.8, 0.85, 0.9), F_BOLD)
   end
-  local border = selected and GOLD or (hovered and rgbm(1, 1, 1, 0.8) or rgbm(1, 1, 1, 0.12))
-  ui.drawRect(p, p + vec2(w, h), border, 3, ui.CornerFlags.All, selected and 2 or 1)
+  local border = selected and GOLD or lerpC(rgbm(1, 1, 1, 0.12), rgbm(1, 1, 1, 0.9), f)
+  ui.drawRect(p, q, border, 4, ui.CornerFlags.All, selected and 2 or 1)
   if c.kind == 'a' then
-    ui.drawRectFilled(vec2(p.x + w - 34, p.y + 3), vec2(p.x + w - 3, p.y + 13), rgbm(0, 0, 0, 0.6), 2)
-    text('ANIM', 7, vec2(p.x + w - 31, p.y + 4), rgbm(1, 1, 1, 0.9), F_BOLD)
+    ui.drawRectFilled(vec2(q.x - 36, p.y + 4), vec2(q.x - 4, p.y + 15), rgbm(0, 0, 0, 0.65), 3)
+    text('ANIM', 7, vec2(q.x - 32, p.y + 6), rgbm(1, 1, 1, 0.95), F_BOLD)
   end
-  if hasFlag(store.newCards, c.id) then
-    ui.drawRectFilled(vec2(p.x + 3, p.y + 3), vec2(p.x + 30, p.y + 13), GOLD, 2)
-    text('NEW', 7, vec2(p.x + 7, p.y + 4), rgbm(0.05, 0.05, 0.05, 1), F_BOLD)
+  if selected then
+    ui.drawRectFilled(vec2(p.x + 4, p.y + 4), vec2(p.x + 58, p.y + 15), GOLD, 3)
+    text('EQUIPPED', 7, vec2(p.x + 8, p.y + 6), rgbm(0.05, 0.05, 0.05, 1), F_BOLD)
+  elseif hasFlag(store.newCards, c.id) then
+    ui.drawRectFilled(vec2(p.x + 4, p.y + 4), vec2(p.x + 32, p.y + 15), GREEN, 3)
+    text('NEW', 7, vec2(p.x + 8, p.y + 6), rgbm(0.05, 0.05, 0.05, 1), F_BOLD)
   end
   if showName then
-    text(c.name, 9, vec2(p.x + 2, p.y + h + 2), selected and GOLD or rgbm(0.8, 0.82, 0.86, 1), F_BOLD)
+    text(c.name, 9, vec2(p0.x + 2, p0.y + h + 4), selected and GOLD or lerpC(rgbm(0.7, 0.72, 0.78, 1), rgbm(1, 1, 1, 1), f), F_BOLD)
   end
   if hovered and not unlocked then ui.setTooltip('Locked: ' .. cardLockText(c)) end
   return clicked and unlocked
 end
 
-local function tabCards()
-  ui.childWindow('##cards', vec2(560, 330), false, 0, function()
-    local col, n = 0, 0
+function tabCards()
+  local n, un = 0, 0
+  for _, c in ipairs(CARDS) do n = n + 1; if cardUnlocked(c) then un = un + 1 end end
+  section(un .. ' of ' .. n .. ' cards unlocked   -   click a card to equip it')
+  ui.childWindow('##cards', vec2(580, 330), false, 0, function()
+    ui.dummy(vec2(1, 4))
+    local col = 0
     for i, c in ipairs(CARDS) do
-      if c.kind ~= 'f' then
-        if cardTile(i, c, 176, 44, true) then selectCard(c) end
-        n = n + 1
-        col = col + 1
-        if col < 3 then ui.sameLine(0, 8) else col = 0 end
-      end
+      if col == 0 then ui.offsetCursorX(6) end
+      if cardTile(i, c, 176, 44, true) then selectCard(c) end
+      col = col + 1
+      if col < 3 then ui.sameLine(0, 10) else col = 0; ui.dummy(vec2(1, 6)) end
     end
   end)
 end
 
-local function bar(frac, w, colr)
+function bar(frac, w, colr, id)
   local p = ui.getCursor()
-  ui.dummy(vec2(w, 6))
-  ui.drawRectFilled(p, p + vec2(w, 4), rgbm(1, 1, 1, 0.12), 2)
-  ui.drawRectFilled(p, p + vec2(w * math.max(0, math.min(1, frac)), 4), colr or GOLD, 2)
+  ui.dummy(vec2(w, 8))
+  frac = math.max(0, math.min(1, frac))
+  if id then frac = ease('bar' .. id, frac, 6) end
+  ui.drawRectFilled(p, p + vec2(w, 5), rgbm(1, 1, 1, 0.1), 2.5)
+  if frac > 0 then ui.drawRectFilled(p, p + vec2(math.max(5, w * frac), 5), colr or GOLD, 2.5) end
 end
 
-local function tabChallenges()
-  if ENABLE_DAILY then
-    ui.textColored('TODAY', GOLD)
-    for _, c in ipairs(daily.list) do
-      local done = hasFlag(store.dailyDone, c.id)
-      local prog = dailyProgress(c)
-      if done then ui.textColored('DONE   ' .. c.text .. '   +' .. fmt(c.xp) .. ' xp', GREEN)
-      else
-        ui.text(string.format('%s   %s / %s   +%s xp', c.text, fmt(prog), fmt(c.goal), fmt(c.xp)))
-        bar(prog / c.goal, 420)
+-- challenge / milestone row: text on the left, reward on the right, bar underneath
+function goalRow(id, title, value, goal, xp, done, w)
+  local p = ui.getCursor()
+  ui.dummy(vec2(w, 40))
+  ui.drawRectFilled(p, p + vec2(w, 40), done and withA(GREEN, 0.08) or rgbm(1, 1, 1, 0.045), 6)
+  if done then ui.drawRectFilled(p, vec2(p.x + 3, p.y + 40), GREEN, 1) end
+  text(title, 11, vec2(p.x + 12, p.y + 7), done and GREEN or rgbm(1, 1, 1, 1), F_BOLD)
+  local r = (done and 'DONE  ' or '') .. '+' .. fmt(xp) .. ' XP'
+  local rw = textW(r, 10, F_BOLD).x
+  text(r, 10, vec2(p.x + w - rw - 12, p.y + 7), done and GREEN or GOLD, F_BOLD)
+  if not done then
+    local pv = fmt(math.min(value, goal)) .. ' / ' .. fmt(goal)
+    local pw = textW(pv, 8).x
+    text(pv, 8, vec2(p.x + w - pw - 12, p.y + 24), DIM)
+    local f = ease('goal' .. id, math.min(1, value / goal), 6)
+    ui.drawRectFilled(vec2(p.x + 12, p.y + 29), vec2(p.x + w - 90, p.y + 33), rgbm(1, 1, 1, 0.1), 2)
+    if f > 0 then ui.drawRectFilled(vec2(p.x + 12, p.y + 29), vec2(p.x + 12 + math.max(4, (w - 102) * f), p.y + 33), GOLD, 2) end
+  end
+  ui.dummy(vec2(1, 2))
+end
+
+function tabChallenges()
+  ui.childWindow('##chal', vec2(580, 330), false, 0, function()
+    local w = 560
+    if ENABLE_DAILY then
+      section('today', GOLD)
+      for _, c in ipairs(daily.list) do goalRow(c.id, c.text, dailyProgress(c), c.goal, c.xp, hasFlag(store.dailyDone, c.id), w) end
+      text(store.dailyCount .. ' daily challenges completed in total', 9, ui.getCursor() + vec2(2, 0), DIM)
+      ui.dummy(vec2(1, 14))
+    end
+    if ENABLE_WEEKLY and weekly.item then
+      section('this week', GOLD)
+      local c = weekly.item
+      goalRow('week', c.text, store[c.key] or 0, c.goal, c.xp, store.weeklyDone, w)
+    end
+    if ENABLE_LOGIN_STREAK then
+      section('login streak', GOLD)
+      local p = ui.getCursor()
+      ui.dummy(vec2(w, 34))
+      ui.drawRectFilled(p, p + vec2(w, 34), rgbm(1, 1, 1, 0.045), 6)
+      for d = 1, 7 do
+        local on = d <= ((store.loginStreak - 1) % 7) + 1
+        ui.drawCircleFilled(vec2(p.x + 20 + (d - 1) * 26, p.y + 17), 8, on and GOLD or rgbm(1, 1, 1, 0.1), 16)
+        text(tostring(d), 8, vec2(p.x + 17 + (d - 1) * 26, p.y + 12), on and rgbm(0.05, 0.05, 0.05, 1) or DIM, F_BOLD)
       end
+      text('day ' .. store.loginStreak .. '   +' .. fmt(math.min(1000, (store.loginStreak + 1) * 100)) .. ' xp tomorrow', 10, vec2(p.x + 210, p.y + 11), rgbm(0.9, 0.9, 0.92, 1), F_BOLD)
     end
-    ui.textColored(store.dailyCount .. ' daily challenges completed in total', DIM)
-    ui.separator()
-  end
-  if ENABLE_WEEKLY and weekly.item then
-    ui.textColored('THIS WEEK', GOLD)
-    local c = weekly.item
-    if store.weeklyDone then ui.textColored('DONE   ' .. c.text .. '   +' .. fmt(c.xp) .. ' xp', GREEN)
-    else
-      local v = store[c.key] or 0
-      ui.text(string.format('%s   %s / %s   +%s xp', c.text, fmt(v), fmt(c.goal), fmt(c.xp)))
-      bar(v / c.goal, 420)
-    end
-    ui.separator()
-  end
-  if ENABLE_LOGIN_STREAK then
-    ui.textColored('LOGIN STREAK', GOLD)
-    ui.text(string.format('day %d   (+%s xp every day you come back, up to 1,000)', store.loginStreak, fmt(math.min(1000, (store.loginStreak + 1) * 100))))
-    ui.separator()
-  end
-  ui.textColored('MILESTONES', GOLD)
-  for _, m in ipairs(MILESTONES) do
-    local done = hasFlag(store.milestonesDone, m.id)
-    local v = store[m.key] or 0
-    if done then ui.textColored('DONE   ' .. m.text, GREEN)
-    else ui.textColored(string.format('%s   %s / %s   +%s xp', m.text, fmt(math.min(v, m.goal)), fmt(m.goal), fmt(m.xp)), rgbm(0.8, 0.82, 0.86, 1)) end
-  end
+    section('milestones', GOLD)
+    for _, m in ipairs(MILESTONES) do goalRow(m.id, m.text, store[m.key] or 0, m.goal, m.xp, hasFlag(store.milestonesDone, m.id), w) end
+  end)
 end
 
-local function tabLeaderboard()
-  local rows = { { name = myTag(), rank = rankIndex, xp = store.xp, best = sessionBest, me = true } }
+function tabLeaderboard()
+  local rows = { { name = myTag(), rank = rankIndex, xp = store.xp, best = sessionBest, me = true, top = sessionTop, prestige = store.prestige } }
   for idx, o in pairs(others) do
     local c = ac.getCar(idx)
-    if c and c.isConnected then rows[#rows + 1] = { name = o.tag or driverName(idx), rank = o.rank, xp = o.xp or 0, best = o.best or 0, top = o.top or 0, prestige = o.prestige or 0 } end
+    if c and c.isConnected then rows[#rows + 1] = { name = o.tag or driverName(idx), rank = o.rank, xp = o.xp or 0, best = o.best or 0, top = o.top or 0, prestige = o.prestige or 0, wanted = idx == wantedIndex } end
   end
-  rows[1].top = sessionTop
-  rows[1].prestige = store.prestige
-  ui.textColored('BEST RUNS TONIGHT', GOLD)
-  table.sort(rows, function(a, b) return a.best > b.best end)
-  for i, r in ipairs(rows) do
-    ui.textColored(string.format('%d.  %s', i, r.name), r.me and GOLD or rgbm(1, 1, 1, 1))
-    ui.sameLine(260)
-    ui.text(fmt(r.best) .. ' pts')
-    ui.sameLine(400)
-    ui.textColored(math.floor(r.top) .. ' km/h', DIM)
-  end
-  ui.separator()
-  ui.textColored('RANKS ON THE SERVER', GOLD)
-  table.sort(rows, function(a, b) return a.xp > b.xp end)
-  for i, r in ipairs(rows) do
-    ui.image(RANKS[r.rank].icon, vec2(18, 18))
-    ui.sameLine()
-    ui.textColored(string.format('%d.  %s', i, r.name), r.me and GOLD or rgbm(1, 1, 1, 1))
-    ui.sameLine(260)
-    ui.textColored(RANKS[r.rank].name, RANKS[r.rank].col)
-    ui.sameLine(400)
-    ui.text(fmt(r.xp) .. ' xp')
-  end
-end
-
-local function tabStats()
-  ui.text(string.format('%s km   %d near misses   %d overtakes   %d contacts', fmt(store.km), store.nearMisses, store.overtakes, store.crashes))
-  ui.text(string.format('top %d km/h   best combo x%d   best run %s', store.topSpeed, store.bestStreak, fmt(store.bestRun)))
-  if ENABLE_FLASH_RACE then ui.text(string.format('flash races: %d, %d wins', store.duels, store.duelWins)) end
-  if ENABLE_POLICE then ui.text(string.format('police: %d escapes, %d busts', store.escapes, store.busts)) end
-  if ENABLE_RACE_ZONES then ui.text(string.format('zone races: %d, %d wins', store.races, store.raceWins)) end
-  local n = 0
-  for _, c in ipairs(CARDS) do if c.kind ~= 'f' and cardUnlocked(c) then n = n + 1 end end
-  local total = 0
-  for _, c in ipairs(CARDS) do if c.kind ~= 'f' then total = total + 1 end end
-  ui.text(string.format('calling cards: %d of %d unlocked', n, total))
-  if ENABLE_PRESTIGE then
-    ui.separator()
-    ui.textColored('PRESTIGE', GOLD)
-    if store.prestige > 0 then ui.text('prestige ' .. store.prestige .. '   +' .. (store.prestige * 5) .. '% xp on everything, stars on your card') end
-    if rankIndex >= #RANKS then
-      ui.textColored('You are NO LICENSE. Prestige sends you back to Rookie with a star next to your rank and +5% xp for good. Cards stay.', DIM)
-      if nlButton('PRESTIGE NOW', 160, GOLD) then
-        store.prestige = store.prestige + 1
-        store.xp = 0
-        rankIndex = 1
-        showBanner('PRESTIGE ' .. store.prestige, 'back to Rookie. +' .. (store.prestige * 5) .. '% xp forever', GOLD, 6)
-        broadcastRank()
-        backendSave()
+  rows[1].wanted = wantedIndex == 0
+  local function list(title, key, unit, col)
+    section(title, col)
+    table.sort(rows, function(a, b) return a[key] > b[key] end)
+    local maxv = math.max(1, rows[1][key])
+    for i, r in ipairs(rows) do
+      local p = ui.getCursor()
+      ui.dummy(vec2(560, 30))
+      ui.drawRectFilled(p, p + vec2(560, 30), r.me and withA(GOLD, 0.08) or rgbm(1, 1, 1, i % 2 == 0 and 0.03 or 0.05), 5)
+      text(tostring(i), 11, vec2(p.x + 10, p.y + 8), i == 1 and GOLD or DIM, F_BOLD)
+      ui.drawImage(RANKS[r.rank].icon, vec2(p.x + 30, p.y + 4), vec2(p.x + 52, p.y + 26), rgbm(1, 1, 1, 1))
+      text(r.name .. (r.prestige > 0 and ('  ' .. string.rep('*', math.min(5, r.prestige))) or ''), 11, vec2(p.x + 60, p.y + 8), r.me and GOLD or rgbm(1, 1, 1, 1), F_BOLD)
+      if r.wanted then
+        ui.drawRectFilled(vec2(p.x + 200, p.y + 9), vec2(p.x + 248, p.y + 21), RED, 2)
+        text('WANTED', 7, vec2(p.x + 205, p.y + 11), rgbm(1, 1, 1, 1), F_BOLD)
       end
-    else
-      ui.textColored('Reach NO LICENSE to prestige.', DIM)
+      text(RANKS[r.rank].name:upper(), 8, vec2(p.x + 260, p.y + 10), RANKS[r.rank].col, F_BOLD)
+      local v = key == 'xp' and (fmt(r.xp) .. ' xp') or (key == 'best' and (fmt(r.best) .. ' pts') or (math.floor(r.top) .. ' km/h'))
+      local vw = textW(v, 11, F_BOLD).x
+      text(v, 11, vec2(p.x + 548 - vw, p.y + 8), rgbm(1, 1, 1, 1), F_BOLD)
+      local f = r[key] / maxv
+      ui.drawRectFilled(vec2(p.x + 360, p.y + 25), vec2(p.x + 360 + 180 * f, p.y + 27), withA(col or GOLD, 0.7), 1)
+      ui.dummy(vec2(1, 2))
     end
   end
-  ui.separator()
-  ui.textColored('HOW XP WORKS', GOLD)
-  ui.textColored('Near misses are the main earner. Closer = more. Chain them for a combo multiplier, go faster for a speed multiplier.', DIM)
-  ui.textColored('A crash costs 100 xp plus 30% of the run you were on. You never lose a rank you have reached.', DIM)
-  ui.textColored('XP boost ' .. XP_BOOST.mult .. 'x between ' .. XP_BOOST.hours[1] .. ':00 and ' .. (XP_BOOST.hours[#XP_BOOST.hours] + 1) .. ':00.', DIM)
+  ui.childWindow('##lb', vec2(580, 330), false, 0, function()
+    list('best runs tonight', 'best', 'pts', GOLD)
+    list('fastest tonight', 'top', 'km/h', GREEN)
+    list('ranks on the server', 'xp', 'xp', rgbm(0.35, 0.72, 1.0, 1))
+  end)
 end
 
-local function tabSettings()
-  ui.textColored('NAME OVER YOUR CAR', GOLD)
+function tabStats()
+  local function stat(label, value, x, y, col)
+    text(tostring(value), 16, vec2(x, y), col or rgbm(1, 1, 1, 1), F_BOLD)
+    text(label:upper(), 8, vec2(x, y + 20), DIM, F_BOLD)
+  end
+  ui.childWindow('##stats', vec2(580, 330), false, 0, function()
+    section('driving', GOLD)
+    local p = ui.getCursor()
+    ui.dummy(vec2(560, 50))
+    ui.drawRectFilled(p, p + vec2(560, 50), rgbm(1, 1, 1, 0.045), 6)
+    stat('km driven', fmt(store.km), p.x + 14, p.y + 8)
+    stat('near misses', fmt(store.nearMisses), p.x + 124, p.y + 8, GREEN)
+    stat('overtakes', fmt(store.overtakes), p.x + 234, p.y + 8)
+    stat('contacts', fmt(store.crashes), p.x + 344, p.y + 8, RED)
+    stat('top speed', math.floor(store.topSpeed) .. ' km/h', p.x + 444, p.y + 8)
+    section('bests', GOLD)
+    p = ui.getCursor()
+    ui.dummy(vec2(560, 50))
+    ui.drawRectFilled(p, p + vec2(560, 50), rgbm(1, 1, 1, 0.045), 6)
+    stat('best run', fmt(store.bestRun), p.x + 14, p.y + 8, GOLD)
+    stat('best combo', 'x' .. store.bestStreak, p.x + 124, p.y + 8)
+    stat('flash races', store.duels, p.x + 234, p.y + 8)
+    stat('race wins', store.duelWins, p.x + 344, p.y + 8, GOLD)
+    stat('escapes', store.escapes .. ' / ' .. store.busts .. ' busts', p.x + 444, p.y + 8)
+    if ENABLE_PRESTIGE then
+      section('prestige', GOLD)
+      p = ui.getCursor()
+      ui.dummy(vec2(560, 54))
+      ui.drawRectFilled(p, p + vec2(560, 54), withA(GOLD, 0.06), 6)
+      if store.prestige > 0 then text(string.rep('*', math.min(10, store.prestige)) .. '  prestige ' .. store.prestige .. '   +' .. (store.prestige * 5) .. '% xp on everything', 11, vec2(p.x + 14, p.y + 8), GOLD, F_BOLD)
+      else text('No stars yet', 11, vec2(p.x + 14, p.y + 8), rgbm(1, 1, 1, 1), F_BOLD) end
+      if rankIndex >= #RANKS then
+        text('You are NO LICENSE. Prestige = back to Rookie, a star on your card, +5% xp for good. Cards stay.', 9, vec2(p.x + 14, p.y + 30), DIM)
+        ui.setCursor(vec2(p.x + 420, p.y + 13))
+        if nlButton('PRESTIGE NOW', 126, GOLD) then
+          store.prestige = store.prestige + 1
+          store.xp = 0
+          rankIndex = 1
+          showBanner('PRESTIGE ' .. store.prestige, 'back to Rookie. +' .. (store.prestige * 5) .. '% xp forever', GOLD, 6)
+          broadcastRank()
+          backendSave()
+        end
+        ui.setCursor(vec2(p.x, p.y + 56))
+      else
+        text('Reach NO LICENSE (rank 27) to prestige.', 9, vec2(p.x + 14, p.y + 30), DIM)
+      end
+    end
+    section('how xp works', GOLD)
+    for _, line in ipairs({
+      'Near misses are the main earner. Closer = more. Chain them for a combo, go faster for a speed multiplier.',
+      'A crash costs 100 xp plus 30% of the run you were on. You never lose a rank you have reached.',
+      'Draft behind another player above 120 km/h for xp. x10 combo puts you ON FIRE for the whole server to see.',
+      'Hold the best run of the night and you are WANTED: 1.5x xp, but everyone gets a bounty for near missing you.',
+      'Crash ' .. HEAT_CRASHES .. ' times in ' .. HEAT_WINDOW .. ' s and the police come. Lose them for big xp, get pinned and lose some.',
+      'XP boost ' .. XP_BOOST.mult .. 'x between ' .. XP_BOOST.hours[1] .. ':00 and ' .. (XP_BOOST.hours[#XP_BOOST.hours] + 1) .. ':00.',
+    }) do text(line, 9, ui.getCursor() + vec2(4, 0), DIM); ui.dummy(vec2(1, 14)) end
+  end)
+end
+
+local FRAMES = { { 'Rank colour', nil }, { 'Gold', GOLD }, { 'White', rgbm(1, 1, 1, 1) }, { 'Green', GREEN }, { 'Red', RED }, { 'Purple', rgbm(0.75, 0.35, 1, 1) }, { 'Ice', rgbm(0.6, 0.85, 1, 1) } }
+function frameColour(i, R)
+  local f = FRAMES[(i or 0) + 1]
+  return (f and f[2]) or R.col
+end
+
+function nlToggle(label, on, w)
+  local p = ui.getCursor()
+  w = w or 260
+  ui.invisibleButton('##t' .. label, vec2(w, 26))
+  local hov = ui.itemHovered()
+  local clicked = ui.itemClicked(ui.MouseButton.Left)
+  local f = ease('tg' .. label, on and 1 or 0)
+  local hf = ease('tgh' .. label, hov and 1 or 0)
+  ui.drawRectFilled(p, p + vec2(w, 26), rgbm(1, 1, 1, 0.05 + 0.05 * hf), 5)
+  ui.drawRectFilled(vec2(p.x + 8, p.y + 7), vec2(p.x + 34, p.y + 19), lerpC(rgbm(1, 1, 1, 0.15), GREEN, f), 6)
+  ui.drawCircleFilled(vec2(p.x + 14 + 14 * f, p.y + 13), 5, lerpC(rgbm(0.8, 0.8, 0.85, 1), rgbm(0.04, 0.04, 0.05, 1), f), 12)
+  text(label, 10, vec2(p.x + 44, p.y + 7), rgbm(1, 1, 1, 0.9), F_BOLD)
+  return clicked
+end
+
+function tabSettings()
+  ui.childWindow('##set', vec2(580, 330), false, 0, function()
+  section('name over your car', GOLD)
   if menuUI.nameEdit == nil then menuUI.nameEdit = myTag() end
+  ui.setNextItemWidth(300)
   menuUI.nameEdit = ui.inputText('##tag', menuUI.nameEdit)
-  ui.sameLine()
-  if ui.button('Save name') then
+  ui.sameLine(0, 8)
+  if nlButton('Save name', 110, GOLD) then
     local v = menuUI.nameEdit:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, 15)
     if v ~= '' then store.tag = v; broadcastRank() end
     menuUI.nameEdit = myTag()
   end
-  ui.separator()
-  ui.textColored('MENU KEY', GOLD)
+  section('card frame colour', GOLD)
+  for i, f in ipairs(FRAMES) do
+    local col = f[2] or RANKS[rankIndex].col
+    local p = ui.getCursor()
+    ui.invisibleButton('##fr' .. i, vec2(26, 26))
+    local hov = ui.itemHovered()
+    if ui.itemClicked(ui.MouseButton.Left) then store.frame = i - 1; broadcastRank() end
+    local hf = ease('fr' .. i, hov and 1 or 0)
+    ui.drawCircleFilled(vec2(p.x + 13, p.y + 13), 10 + 2 * hf, col, 20)
+    if store.frame == i - 1 then ui.drawCircle(vec2(p.x + 13, p.y + 13), 13, rgbm(1, 1, 1, 1), 20, 2) end
+    if hov then ui.setTooltip(f[1]) end
+    if i < #FRAMES then ui.sameLine(0, 8) end
+  end
+  section('menu key', GOLD)
   if menuButton then
     local okc = pcall(function() menuButton:control(vec2(160, 24)) end)
     if not okc then ui.text('current key: ' .. MENU_KEY) end
   else
     ui.text('current key: ' .. MENU_KEY)
   end
-  ui.separator()
-  if ui.checkbox('Show other players\' calling cards and names', store.showOthersCards) then store.showOthersCards = not store.showOthersCards end
-  if ui.checkbox('Always show the HUD', store.alwaysShow) then store.alwaysShow = not store.alwaysShow end
+  section('display', GOLD)
+  if nlToggle('Show other players\' calling cards and names', store.showOthersCards) then store.showOthersCards = not store.showOthersCards end
+  if nlToggle('Always show the HUD', store.alwaysShow) then store.alwaysShow = not store.alwaysShow end
+  ui.setNextItemWidth(260)
   store.hudScale = ui.slider('##hs', store.hudScale, 0.6, 1.8, 'HUD size: %.2f')
+  ui.setNextItemWidth(260)
   store.nameplateScale = ui.slider('##ns', store.nameplateScale, 0.6, 1.6, 'Card size over cars: %.2f')
-  if ENABLE_FLASH_RACE then
-    ui.separator()
-    ui.textColored('Flash race: stop next to someone, both flash your headlights twice. ' .. RACE_GET_READY .. ' s to line up, then ' .. RACE_SECONDS .. ' s. In front at the end wins. Crash = loss.', DIM)
-    if duel.state ~= 'idle' and ui.button('Cancel race') then duelCancel(true) end
+  if ENABLE_EMOTES then
+    section('emotes  (numpad 1 - ' .. #EMOTES .. ')', GOLD)
+    for i, e in ipairs(EMOTES) do
+      if nlButton(i .. '  ' .. e, 84) then sendEmote(i) end
+      if i < #EMOTES then ui.sameLine(0, 6) end
+    end
   end
-  if chase.state ~= 'idle' and ui.button('Cancel chase') then chaseReset() end
-
+  if ENABLE_FLASH_RACE then
+    section('flash race', GOLD)
+    text('Flash your headlights twice at someone close by (under 60 km/h). They get an Accept / Decline popup. ' .. RACE_GET_READY .. ' s to line up, then ' .. RACE_SECONDS .. ' s. In front at the end wins. Flip = loss.', 9, ui.getCursor() + vec2(4, 0), DIM)
+    ui.dummy(vec2(1, 16))
+    if duel.state ~= 'idle' and nlButton('Cancel race', 120, RED) then duelCancel(true) end
+  end
+  if chase.state ~= 'idle' and nlButton('Cancel chase', 120, RED) then chaseReset() end
   if ENABLE_POLICE or ENABLE_RACE_ZONES then
     ui.separator()
     ui.text('Zones   (' .. zonesSource .. ')')
@@ -2035,39 +2401,54 @@ local function tabSettings()
     end
     ui.textColored('Place zones, Copy zones.json, paste it into zones.json on GitHub. Everyone gets them next join.', DIM)
   end
+  end)
 end
 
-local function drawMenu()
+function drawMenu()
     local R = RANKS[rankIndex]
     local nxt = RANKS[rankIndex + 1]
-
-    -- how everyone else sees you
+    local W = 580
+    -- header strip
     local p = ui.getCursor()
+    ui.dummy(vec2(W, 118))
+    pcall(function() ui.drawRectFilledMultiColor(p, p + vec2(W, 118), withA(R.col, 0.22), rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0), withA(R.col, 0.06)) end)
+    ui.drawRectFilled(vec2(p.x, p.y + 117), vec2(p.x + W, p.y + 118), withA(R.col, 0.5))
+    -- how everyone else sees you
     local k = 2.4
-    local W, H = 150 * k, 37.5 * k
-    ui.dummy(vec2(W, H + 14 * k))
-    drawNameplate(p.x + W / 2, p.y + H + 10 * k, k, 1, myTag(), R, myCard(), isTopRun(), store.prestige, wantedIndex == 0, onFire)
-    ui.sameLine(W + 16)
-    ui.beginGroup()
-    ui.textColored(R.name:upper(), R.col)
-    ui.text('rank ' .. rankIndex .. ' of ' .. #RANKS .. '   ' .. fmt(store.xp) .. ' xp' .. (backendOK and '   (server saved)' or ''))
+    local cw, ch = 150 * k, 37.5 * k
+    drawNameplate(p.x + 12 + cw / 2, p.y + 14 + ch + 10 * k, k, 1, myTag(), R, myCard(), isTopRun(), store.prestige, wantedIndex == 0, onFire, myEmote.text, t - myEmote.t, store.frame)
+    local tx = p.x + cw + 32
+    text(R.name:upper(), 22, vec2(tx, p.y + 18), R.col, F_BOLD)
+    text('RANK ' .. rankIndex .. ' / ' .. #RANKS .. (store.prestige > 0 and ('   PRESTIGE ' .. store.prestige) or ''), 9, vec2(tx, p.y + 46), DIM, F_BOLD)
+    text(fmt(store.xp) .. ' XP', 12, vec2(tx, p.y + 60), rgbm(1, 1, 1, 1), F_BOLD)
     if nxt then
-      ui.text(fmt(nxt.xp - store.xp) .. ' xp to ' .. nxt.name)
-      bar((store.xp - R.xp) / (nxt.xp - R.xp), 200, R.col)
+      local f = ease('hdrbar', (store.xp - R.xp) / (nxt.xp - R.xp), 6)
+      ui.drawRectFilled(vec2(tx, p.y + 82), vec2(tx + 190, p.y + 86), rgbm(1, 1, 1, 0.1), 2)
+      ui.drawRectFilled(vec2(tx, p.y + 82), vec2(tx + 190 * math.max(0, math.min(1, f)), p.y + 86), R.col, 2)
+      text(fmt(nxt.xp - store.xp) .. ' to ' .. nxt.name:upper(), 8, vec2(tx, p.y + 92), DIM, F_BOLD)
+    else
+      text('MAX RANK', 8, vec2(tx, p.y + 92), GOLD, F_BOLD)
     end
+    local badges, bx = {}, p.x + W - 12
     local newN = countNewCards()
-    if newN > 0 then ui.textColored(newN .. ' new card' .. (newN > 1 and 's' or '') .. ' unlocked', GOLD) end
-    if boostActive() then ui.textColored(XP_BOOST.mult .. 'X XP ACTIVE', GOLD) end
-    ui.endGroup()
-    ui.separator()
-
-    ui.tabBar('##nltabs', function()
-      ui.tabItem('Cards', tabCards)
-      ui.tabItem('Challenges', tabChallenges)
-      ui.tabItem('Leaderboard', tabLeaderboard)
-      ui.tabItem('Stats', tabStats)
-      ui.tabItem('Settings', tabSettings)
-    end)
+    if newN > 0 then badges[#badges + 1] = { newN .. ' NEW CARD' .. (newN > 1 and 'S' or ''), GREEN } end
+    if boostActive() then badges[#badges + 1] = { XP_BOOST.mult .. 'X XP', GOLD } end
+    if wantedIndex == 0 then badges[#badges + 1] = { 'WANTED', RED } end
+    if backendOK then badges[#badges + 1] = { 'SERVER SAVED', DIM } end
+    local by = p.y + 16
+    for _, b in ipairs(badges) do
+      local bw = textW(b[1], 8, F_BOLD).x + 14
+      ui.drawRectFilled(vec2(bx - bw, by), vec2(bx, by + 16), withA(b[2], 0.9), 3)
+      text(b[1], 8, vec2(bx - bw + 7, by + 3), b[2] == DIM and rgbm(1, 1, 1, 1) or rgbm(0.05, 0.05, 0.05, 1), F_BOLD)
+      by = by + 20
+    end
+    ui.setCursor(vec2(p.x, p.y + 124))
+    nlTabs('m', { 'Cards', 'Challenges', 'Leaderboard', 'Stats', 'Settings' }, menuUI, W)
+    if menuUI.tab == 1 then tabCards()
+    elseif menuUI.tab == 2 then tabChallenges()
+    elseif menuUI.tab == 3 then tabLeaderboard()
+    elseif menuUI.tab == 4 then tabStats()
+    else tabSettings() end
 end
 
 pcall(function()
@@ -2080,7 +2461,7 @@ pcall(function()
   menuButton = ac.ControlButton('NL_RANKS_MENU', { keyboard = { key = ui.KeyIndex[MENU_KEY] or ui.KeyIndex.Home } })
 end)
 
-local function menuKeyPressed()
+function menuKeyPressed()
   if menuButton then
     local ok, v = pcall(function() return menuButton:pressed() end)
     if ok then return v == true end
@@ -2089,15 +2470,15 @@ local function menuKeyPressed()
   return ok and v == true
 end
 
-local function openMenu()
+function openMenu()
   if menu.open then return end
   menu.open = true
   menu.close = false
   local ok = pcall(function()
     ui.modalDialog('No License Ranks', function()
       drawMenu()
-      ui.separator()
-      if nlButton('Close', 100) or menu.close then menu.open = false; menu.close = false; return true end
+      ui.dummy(vec2(1, 6))
+      if nlButton('Close   ' .. MENU_KEY:upper(), 120) or menu.close then menu.open = false; menu.close = false; return true end
       return false
     end, false, function() menu.open = false end)
   end)
@@ -2105,9 +2486,11 @@ local function openMenu()
 end
 
 local baseDrawUI = script.drawUI
+local drawErr = nil
 function script.drawUI(dt)
-  baseDrawUI(dt)
   if not started then return end
+  local ok, err = pcall(baseDrawUI, dt)
+  if not ok and drawErr ~= tostring(err) then drawErr = tostring(err); dlog('draw error: ' .. drawErr) end
   if menuKeyPressed() then
     if menu.open then menu.close = true else openMenu() end
   end
