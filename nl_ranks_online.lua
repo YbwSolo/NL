@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '4.8'
+local VERSION = '4.9'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -41,7 +41,10 @@ local XP_BOOST = { hours = { 20, 21, 22, 23 }, mult = 2 }
 
 -- Key that opens the menu (name from ui.KeyIndex: Home, End, Insert, F9, F10, M, N ...). Players can rebind it in Settings.
 local MENU_KEY = 'End'
-local ADMIN_KEY = 'Home'           -- admin panel. only opens after /admin <password> (F-keys are taken by AC itself)
+local ADMIN_KEY = 'Home'           -- admin panel. press it, type the admin password once, done (F-keys are taken by AC itself)
+-- Admin password, stored as a hash so the plain password is not sitting in a public file.
+-- To change it: open the admin panel -> Security -> type a new password -> Copy hash -> paste it here.
+local ADMIN_PASSWORD_HASH = '23695191-47201398'
 local HINT_SECONDS = 30            -- how long the "press HOME" hint stays on the left of the screen after joining
 
 local ENABLE_WANTED = true         -- top run on the server becomes WANTED: 1.5x xp for them, bounty xp for near-missing them
@@ -207,7 +210,7 @@ local store = ac.storage {
   tag = '', card = 's_default', showOthersCards = true, nameplateScale = 1.0, unlockedCards = '', newCards = '', cardsInit = false,
   loginStreak = 0, lastLoginKey = '', dailyCount = 0, bestCombo = 0,
   weekKey = '', weekNear = 0, weekKm = 0, weekWins = 0, weeklyDone = false,
-  prestige = 0, menuKey = '', frame = 0,
+  prestige = 0, menuKey = '', frame = 0, adminKey = '',
 }
 
 ------------------------------------------------------------------ zones (remote json, or placed in game)
@@ -1086,6 +1089,7 @@ local function disposeUnit(u)
   if u.body then pcall(function() u.body:dispose() end) end
 end
 
+function nlChaseState() return chase.state end
 local function chaseReset()
   for _, u in ipairs(chase.units) do disposeUnit(u) end
   chase = { state = 'idle', zone = nil, countdown = 0, time = 0, units = {}, trail = {}, trailTimer = 0, bustTimer = -1, farTimer = 0, lastSpawnT = 0, pinTimer = 0 }
@@ -1120,6 +1124,24 @@ local function trailPointAt(ago)
   return tr[1].p
 end
 
+-- point on the player's trail a bit further along than where the unit is now (keeps units on the road through corners)
+local function trailAhead(pos, lookahead)
+  local tr = chase.trail
+  if #tr < 2 then return nil end
+  local bestI, bestD = #tr, 1e9
+  for i = #tr, 1, -1 do
+    local d = flatDist(tr[i].p, pos)
+    if d < bestD then bestD, bestI = d, i end
+  end
+  if bestD > 80 then return nil end     -- nowhere near the trail: go straight at the player
+  local acc = 0
+  for i = bestI, #tr - 1 do
+    acc = acc + flatDist(tr[i].p, tr[i + 1].p)
+    if acc >= lookahead then return tr[i + 1].p end
+  end
+  return nil
+end
+
 local heat = { crashes = {} }
 local function heatCrash(me)
   if not ENABLE_HEAT or chase.state ~= 'idle' then return end
@@ -1148,8 +1170,8 @@ local function driveUnit(i, u, dt, me)
   -- where it wants to go
   local target, want
   if gap > 45 or not behind then
-    -- far away or player got behind it: follow the road the player took
-    target = trailPointAt(1.2 + 0.4 * (i - 1))
+    -- far away or player got behind it: follow the road the player took, aiming a bit ahead along it
+    target = trailAhead(u.pos, 22 + 4 * (i - 1))
     if not target or flatDist(target, u.pos) < 3 then target = me.position end
     want = math.min(pSpeed + 14, 72)
   elseif u.role == 'ram' then
@@ -1178,14 +1200,15 @@ local function driveUnit(i, u, dt, me)
   local dist = dl:length()
   if dist > 0.3 then
     local dir = dl / dist
+    -- cross > 0 means the target is to the left when rotating (x, z) -> (x cos - z sin, x sin + z cos), so turn positive
     local cross = u.look.x * dir.z - u.look.z * dir.x
     local dot = math.max(-1, math.min(1, u.look:dot(dir)))
     local ang = math.acos(dot)
     local maxTurn = (2.4 - math.min(1.8, u.spd * 0.03)) * dt
-    local turn = math.min(ang, maxTurn) * (cross < 0 and 1 or -1)
+    local turn = math.min(ang, maxTurn) * (cross > 0 and 1 or -1)
     local c, s = math.cos(turn), math.sin(turn)
     u.look = vec3(u.look.x * c - u.look.z * s, 0, u.look.x * s + u.look.z * c):normalize()
-    if ang > 1.2 then want = math.min(want, 9) end   -- sharp turn, slow down
+    if ang > 0.5 then want = math.min(want, math.max(8, 30 - (ang - 0.5) * 18)) end   -- the sharper the turn, the slower
   end
   if dist < 2 and u.role ~= 'ram' then want = pSpeed end
   if u.spd < want then u.spd = math.min(want, u.spd + 9 * dt) else u.spd = math.max(want, u.spd - 16 * dt) end
@@ -1269,6 +1292,23 @@ local function chaseUpdate(dt, me)
   end
   chase.time = chase.time + dt
   hud.lastEvent = t
+  -- sent back to the pits (server /pit, reset, teleport) while they are on you = caught
+  local jumped = false
+  pcall(function()
+    if me.justJumped == true or me.isInPit == true then jumped = true end
+    if chase.resetCount == nil then chase.resetCount = me.resetCounter end
+    if me.resetCounter ~= nil and chase.resetCount ~= nil and me.resetCounter ~= chase.resetCount then jumped = true end
+  end)
+  if chase.lastPos and flatDist(me.position, chase.lastPos) > 60 then jumped = true end
+  chase.lastPos = vec3(me.position.x, me.position.y, me.position.z)
+  if jumped and chase.time > 1 then
+    store.busts = store.busts + 1
+    showBanner('BUSTED', 'back to the pits with them on you   ' .. XP.busted .. ' xp', rgbm(1, 0.3, 0.25, 1), 4)
+    addXP(XP.busted, 'busted', rgbm(1, 0.3, 0.25, 1), true)
+    endRun(true)
+    chaseReset()
+    return
+  end
   local nearest = 1e9
   for i, u in ipairs(chase.units) do
     local ok, gap = pcall(driveUnit, i, u, dt, me)
@@ -2275,6 +2315,7 @@ function searchBox(id, value, w)
 end
 
 -- panel frame: 20px radius glass, 2px grey border, 64px header with its own bottom border
+panelErr = {}
 function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
   local sim = ac.getSim()
   local f = ease('panel' .. id, 1, 10)
@@ -2282,7 +2323,12 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
   local pw, ph = w * sc, h * sc
   local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
   ui.transparentWindow('nl_' .. id, vec2(px - 24, py - 24), vec2(pw + 48, ph + 48), true, true, function()
-    local o = vec2(24, 24)
+    -- the list inside may be taller than the window, so ImGui happily scrolls the whole window on the mouse wheel.
+    -- undo that: draw everything offset by the scroll (so nothing moves) and put the scroll back to zero
+    local sy = 0
+    pcall(function() sy = ui.getScrollY() or 0 end)
+    if sy ~= 0 then pcall(function() ui.setScrollY(0, false, false) end) end
+    local o = vec2(24, 24 + sy)
     ui.drawRectFilled(o + vec2(2, 8), o + vec2(pw + 2, ph + 8), rgbm(0, 0, 0, 0.35 * f), 20)
     ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.016, 0.012, 0.024, 0.86 * f), 20)
     -- header
@@ -2313,7 +2359,16 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
     -- every new line starts at the content edge, not at the window edge
     ui.indent(o.x + 22)
     ui.setCursor(o + vec2(22, 80))
-    fn()
+    -- if the content fails the panel still shows, with the reason on it, instead of silently vanishing
+    local okf, errf = pcall(fn)
+    if not okf then
+      local e = tostring(errf)
+      if panelErr[id] ~= e then panelErr[id] = e; dlog('panel ' .. id .. ' error: ' .. e) end
+      text('THIS PANEL HIT AN ERROR', 12, o + vec2(22, 90), RED, F_BOLD)
+      text(e:sub(1, 90), 9, o + vec2(22, 112), rgbm(1, 1, 1, 0.8))
+      if #e > 90 then text(e:sub(91, 180), 9, o + vec2(22, 126), rgbm(1, 1, 1, 0.8)) end
+      text('IT IS IN THE CSP LOG TOO (DOCUMENTS / ASSETTO CORSA / LOGS / CUSTOM_SHADERS_PATCH.LOG)', 7, o + vec2(22, 146), DIM, F_BOLD)
+    end
     ui.unindent(o.x + 22)
   end)
 end
@@ -2701,35 +2756,19 @@ function tabSettings()
     end
     if chase.state ~= 'idle' and nlButton('Cancel chase', 140, RED, 32, 'close') then chaseReset() end
     section('admin', RED, 'admin')
-    text('CSP ADMIN FLAG: ' .. (admin.simAdmin and 'YES' or 'NO') .. '      LOGGED IN HERE: ' .. (admin.chatAdmin and 'YES' or 'NO'), 7, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
-    ui.dummy(vec2(1, 12))
-    if admin.isAdmin then
+    if admin.unlocked then
+      text('UNLOCKED ON THIS PC.   SERVER LINK: ' .. (admin.simAdmin and 'YES' or (admin.chatAdmin and 'SENT' or 'NO')), 7, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+      ui.dummy(vec2(1, 12))
       if nlButton('Open admin panel', 190, RED, 32, 'admin') then admin.open = true; anim['paneladmin'] = 0; menu.open = false end
-      text('OR PRESS ' .. ADMIN_KEY:upper(), 8, ui.getCursor() + vec2(4, 2), DIM, F_BOLD)
-      ui.dummy(vec2(1, 14))
+      ui.sameLine(0, 8)
+      if nlButton('Lock', 90, nil, 32, 'lock') then adminLock() end
     else
-      if admin.pw == nil then admin.pw = '' end
-      local q = ui.getCursor()
-      pill(q, 260, 32, false, 0)
-      ui.setCursor(vec2(q.x + 12, q.y + 5))
-      ui.setNextItemWidth(236)
-      pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
-      local pwFlags = 0
-      pcall(function() pwFlags = ui.InputTextFlags.Password end)
-      admin.pw = ui.inputText('##adminpw', admin.pw, pwFlags)
-      pcall(function() ui.popStyleColor() end)
-      if admin.pw == '' then text('SERVER ADMIN PASSWORD', 9, vec2(q.x + 14, q.y + 11), rgbm(1, 1, 1, 0.3), F_BOLD) end
-      ui.setCursor(vec2(q.x + 270, q.y))
-      if nlButton('Log in', 110, RED, 32, 'admin') and admin.pw ~= '' then
-        pcall(function() ac.sendChatMessage('/admin ' .. admin.pw) end)
-        admin.chatAdmin = true
-        admin.isAdmin = true
-        admin.pw = ''
-        pcall(function() ui.toast(ui.Icons and ui.Icons.Confirm or 'fx:loading', 'Admin panel unlocked. Press ' .. ADMIN_KEY:upper() .. '.') end)
-      end
-      text('SAME PASSWORD AS /ADMIN IN CHAT. SENDS /ADMIN FOR YOU AND UNLOCKS THE PANEL.', 7, ui.getCursor() + vec2(2, 2), DIM, F_BOLD)
-      ui.dummy(vec2(1, 14))
+      text('ADMINS ONLY. PRESS ' .. ADMIN_KEY:upper() .. ' OR THE BUTTON AND TYPE THE ADMIN PASSWORD ONCE.', 7, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+      ui.dummy(vec2(1, 12))
+      if nlButton('Admin login', 150, RED, 32, 'key') then adminToggle() end
     end
+    text('OR PRESS ' .. ADMIN_KEY:upper(), 8, ui.getCursor() + vec2(4, 2), DIM, F_BOLD)
+    ui.dummy(vec2(1, 14))
   if ENABLE_POLICE or ENABLE_RACE_ZONES then
     ui.separator()
     ui.text('Zones   (' .. zonesSource .. ')')
@@ -2806,7 +2845,7 @@ function drawMenu()
     if boostActive() then badges[#badges + 1] = { XP_BOOST.mult .. 'X XP', GOLD } end
     if adminBoostActive() then badges[#badges + 1] = { '2X XP EVENT', GOLD } end
     if wantedIndex == 0 then badges[#badges + 1] = { 'WANTED', RED } end
-    if admin.isAdmin then badges[#badges + 1] = { 'ADMIN  ' .. ADMIN_KEY:upper(), RED } end
+    if admin.unlocked then badges[#badges + 1] = { 'ADMIN  ' .. ADMIN_KEY:upper(), RED } end
     local bx = tx
     for _, b in ipairs(badges) do
       local bw = textW(b[1], 8, F_BOLD).x + 16
@@ -2856,7 +2895,9 @@ end
 
 ------------------------------------------------------------------ admin panel (only after /admin <password> in chat)
 
-admin = { open = false, tab = 1, tabX = 0, tabW = 0, say = '', time = 20, transition = 60, rain = 0, wet = 0, water = 0, grip = 1.0, checkT = 0, boostMin = 30, announce = '', restrict = 0, ballast = 0, isAdmin = false, log = {} }
+admin = { open = false, login = false, unlocked = false, tab = 1, tabX = 0, tabW = 0, say = '', time = 20, transition = 60, rain = 0, wet = 0, water = 0, grip = 1.0,
+  checkT = 0, boostMin = 30, announce = '', restrict = 0, ballast = 0, giveXP = 5000, isAdmin = false, simAdmin = false, chatAdmin = false, sentAt = -1,
+  pw = '', serverPw = '', newPw = '', newHash = '', wrong = 0, lockT = 0, shake = 0, spectating = -1, log = {} }
 adminEvent = nil
 adminBoost = { until_ = -1, mult = 1 }
 
@@ -2867,6 +2908,17 @@ WEATHERS = {
   { 'Thunderstorm', 1 }, { 'Heavy storm', 2 }, { 'Light snow', 9 }, { 'Snow', 10 }, { 'Hail', 32 },
 }
 TIMES = { { 'Dawn', 5.5 }, { 'Sunrise', 6.5 }, { 'Morning', 9 }, { 'Noon', 12 }, { 'Afternoon', 15 }, { 'Golden', 17.5 }, { 'Sunset', 19 }, { 'Dusk', 20 }, { 'Night', 22 }, { 'Midnight', 0 } }
+
+-- password hash: two rolling sums, nothing fancy, just so the plain password is not in a public file
+function pwHash(s)
+  local h1, h2 = 7, 11
+  for i = 1, #s do
+    local b = s:byte(i)
+    h1 = (h1 * 31 + b) % 1000000007
+    h2 = (h2 * 131 + b * 7 + i) % 998244353
+  end
+  return string.format('%d-%d', h1, h2)
+end
 
 function adminLog(s)
   admin.log[#admin.log + 1] = s
@@ -2879,10 +2931,39 @@ function cmd(c)
   if not ok then dlog('chat command failed: ' .. tostring(err)) end
 end
 
+-- remembered unlock: the stored hash has to match the one in this file, so changing the password locks everyone out again
+if store.adminKey ~= '' and store.adminKey == ADMIN_PASSWORD_HASH then admin.unlocked = true end
+
+function adminUnlock(pw)
+  if admin.lockT > t then return false end
+  if pwHash(pw) == ADMIN_PASSWORD_HASH then
+    admin.unlocked = true
+    admin.login = false
+    admin.open = true
+    admin.wrong = 0
+    anim['paneladmin'] = 0
+    store.adminKey = ADMIN_PASSWORD_HASH
+    pcall(function() ui.toast(ui.Icons and ui.Icons.Confirm or 'fx:loading', 'Admin panel unlocked. ' .. ADMIN_KEY:upper() .. ' opens it from now on.') end)
+    return true
+  end
+  admin.wrong = admin.wrong + 1
+  admin.shake = 1
+  if admin.wrong >= 3 then admin.lockT = t + 15; admin.wrong = 0 end
+  return false
+end
+
+function adminLock()
+  admin.unlocked = false
+  admin.open = false
+  admin.login = false
+  store.adminKey = ''
+end
+
 pcall(function()
-  adminEvent = ac.OnlineEvent({ ac.StructItem.key('NLAdmin4'), kind = ac.StructItem.byte(), value = ac.StructItem.float(), text = ac.StructItem.string(60) }, function(sender, data)
+  adminEvent = ac.OnlineEvent({ ac.StructItem.key('NLAdmin5'), kind = ac.StructItem.byte(), target = ac.StructItem.int16(), value = ac.StructItem.float(), text = ac.StructItem.string(60) }, function(sender, data)
     if sender == nil then return end
     local who = sender.index == 0 and myTag() or driverName(sender.index)
+    local forMe = data.target == nil or data.target < 0 or data.target == sessionOf(0)
     if data.kind == 1 then
       showBanner('ANNOUNCEMENT', tostring(data.text or ''), GOLD, 8)
       pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Admin: ' .. tostring(data.text or '')) end)
@@ -2895,136 +2976,345 @@ pcall(function()
       if chase.state ~= 'idle' then chaseReset() end
       if duel.state ~= 'idle' then duelReset() end
       event('admin reset: chases and races cleared', DIM, true)
+    elseif data.kind == 4 and forMe then
+      -- police sent by an admin
+      if chase.state == 'idle' then
+        chase.state = 'countdown'
+        chase.zone = nil
+        chase.countdown = 3.0
+        chase.time = 0
+        showBanner('HEAT', who .. ' sent the police. on you in 3. drive', rgbm(0.3, 0.5, 1, 1), 3)
+      end
+    elseif data.kind == 5 and forMe then
+      local n = math.floor(data.value or 0)
+      if n > 0 then
+        showBanner('XP GIFT', '+' .. fmt(n) .. ' xp from ' .. who, GOLD, 4)
+        addXP(n, 'gift from ' .. who, GOLD, true)
+      end
+    elseif data.kind == 6 and forMe then
+      showBanner('ADMIN', tostring(data.text or ''), RED, 6)
+      pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', who .. ': ' .. tostring(data.text or '')) end)
     end
   end)
 end)
 
-function adminSend(kind, value, textv)
+-- kinds: 1 announce, 2 boost (value = minutes), 3 clear chases/races, 4 police on target, 5 xp to target, 6 private message to target
+function adminSend(kind, value, textv, target)
   if not adminEvent then return end
-  pcall(function() adminEvent({ kind = kind, value = value or 0, text = (textv or ''):sub(1, 59) }, false) end)
+  pcall(function() adminEvent({ kind = kind, target = target or -1, value = value or 0, text = (textv or ''):sub(1, 59) }, false) end)
 end
 
 function adminBoostActive() return adminBoost.until_ > t end
 
+function adminLinked() return admin.simAdmin == true or admin.chatAdmin == true end
+
+-- server link strip at the top of every admin tab: are the /commands going to work
+function adminLinkStrip()
+  local p = ui.getCursor()
+  ui.dummy(vec2(600, 44))
+  local linked = adminLinked()
+  local col = admin.simAdmin and GREEN or (admin.chatAdmin and GOLD or RED)
+  ui.drawRectFilled(p, p + vec2(600, 44), withA(col, 0.10), 10)
+  ui.drawRect(p, p + vec2(600, 44), withA(col, 0.6), 10, ui.CornerFlags.All, 1)
+  ui.drawCircleFilled(vec2(p.x + 18, p.y + 22), 5, col, 16)
+  local label = admin.simAdmin and 'SERVER LINK: ADMIN (CSP CONFIRMED IT)' or (admin.chatAdmin and 'SERVER LINK: /ADMIN SENT. TIME, WEATHER, PIT, KICK AND BAN SHOULD WORK' or 'SERVER LINK: NOT LOGGED IN. TIME, WEATHER, PIT, KICK AND BAN WILL BE IGNORED BY THE SERVER')
+  text(label, 8, vec2(p.x + 32, p.y + 8), rgbm(1, 1, 1, 0.9), F_BOLD)
+  text('ANNOUNCEMENTS, 2X XP, POLICE, XP GIFTS, MESSAGES AND SPECTATE WORK WITHOUT THE SERVER LINK', 7, vec2(p.x + 32, p.y + 24), DIM, F_BOLD)
+  if not admin.simAdmin then
+    -- server password box on the right: sends /admin <pw> for you
+    local q = vec2(p.x + 600 - 262, p.y + 6)
+    pill(q, 160, 32, false, 0)
+    ui.setCursor(vec2(q.x + 10, q.y + 5))
+    ui.setNextItemWidth(140)
+    pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+    local pwFlags = 0
+    pcall(function() pwFlags = ui.InputTextFlags.Password end)
+    local v, _, enter = ui.inputText('##srvpw', admin.serverPw, pwFlags)
+    admin.serverPw = v or admin.serverPw
+    pcall(function() ui.popStyleColor() end)
+    if admin.serverPw == '' then text('SERVER /ADMIN PASSWORD', 7, vec2(q.x + 12, q.y + 12), rgbm(1, 1, 1, 0.3), F_BOLD) end
+    ui.setCursor(vec2(q.x + 168, q.y))
+    if (nlButton('Link', 88, RED, 32, 'key') or enter == true) and admin.serverPw ~= '' then
+      cmd('/admin ' .. admin.serverPw)
+      admin.chatAdmin = true
+      admin.sentAt = t
+      admin.serverPw = ''
+      pcall(function() ac.checkAdminPrivileges() end)
+    end
+    ui.setCursor(vec2(p.x, p.y + 50))
+  else
+    ui.setCursor(vec2(p.x, p.y + 50))
+  end
+end
+
 function adminTabPlayers()
   scrollArea('adm_pl', 600, 400, function()
-    section('players on the server', RED)
+    adminLinkStrip()
+    if admin.spectating >= 0 then
+      if nlButton('Back to my car', 150, GOLD, 28, 'car') then pcall(function() ac.focusCar(0) end); admin.spectating = -1 end
+      ui.sameLine(0, 8)
+      text('SPECTATING ' .. driverName(admin.spectating):upper(), 8, ui.getCursor() + vec2(0, 9), DIM, F_BOLD)
+      ui.dummy(vec2(1, 30))
+    end
+    section('players on the server', RED, 'players')
     local rows = {}
     local sim = ac.getSim()
-    for i = 0, sim.carsCount - 1 do
+    for i = 0, (sim.carsCount or 1) - 1 do
       local c = ac.getCar(i)
       if c and c.isConnected then rows[#rows + 1] = { i = i, c = c } end
     end
     for _, r in ipairs(rows) do
-      local c, i = r.c, r.i
-      local o = others[i]
-      local p = ui.getCursor()
-      ui.dummy(vec2(580, 58))
-      ui.drawRectFilled(p, p + vec2(580, 58), rgbm(1, 1, 1, i == 0 and 0.03 or 0.05), 6)
-      local R = RANKS[(o and o.rank) or rankIndex]
-      if i == 0 then R = RANKS[rankIndex] end
-      ui.drawImage(R.icon, vec2(p.x + 10, p.y + 8), vec2(p.x + 34, p.y + 32), rgbm(1, 1, 1, 1))
-      text((i == 0 and myTag() or driverName(i)) .. (i == 0 and '  (you)' or ''), 12, vec2(p.x + 42, p.y + 8), rgbm(1, 1, 1, 1), F_BOLD)
-      local sid = 0
-      pcall(function() sid = c.sessionID end)
-      local ping = 0
-      pcall(function() ping = c.ping or 0 end)
-      text(string.format('id %d   %s   %d ms   %d km/h', sid or 0, ac.getCarID(i) or '', ping or 0, math.floor(c.speedKmh or 0)), 8, vec2(p.x + 42, p.y + 26), DIM, F_BOLD)
-      if i ~= 0 then
-        ui.setCursor(vec2(p.x + 42, p.y + 36))
-        if nlButton('Pit##' .. i, 54, nil, 20) then cmd('/pit ' .. sid) end
-        ui.sameLine(0, 4)
-        if nlButton('Kick##' .. i, 54, nil, 20) then cmd('/kick_id ' .. sid) end
-        ui.sameLine(0, 4)
-        if nlButton('Ban##' .. i, 54, RED, 20) then cmd('/ban_id ' .. sid) end
-        ui.sameLine(0, 4)
-        if nlButton('Lights on##' .. i, 74, nil, 20) then cmd('/forcelights on ' .. sid) end
-        ui.sameLine(0, 4)
-        if nlButton('Lights off##' .. i, 74, nil, 20) then cmd('/forcelights off ' .. sid) end
-        ui.sameLine(0, 4)
-        if nlButton('Who##' .. i, 46, nil, 20) then cmd('/whois ' .. sid) end
-        ui.sameLine(0, 4)
-        if nlButton('Restrict##' .. i, 66, nil, 20) then cmd('/restrict ' .. sid .. ' ' .. admin.restrict) end
-        ui.sameLine(0, 4)
-        if nlButton('Ballast##' .. i, 62, nil, 20) then cmd('/ballast ' .. sid .. ' ' .. admin.ballast) end
-      end
-      ui.setCursor(vec2(p.x, p.y + 62))
+      local ok, err = pcall(adminPlayerRow, r.i, r.c)
+      if not ok then text('row failed: ' .. tostring(err):sub(1, 80), 8, ui.getCursor(), RED); ui.dummy(vec2(1, 14)) end
     end
-    section('values used by restrict / ballast', RED)
-    ui.setNextItemWidth(280)
+    section('values used by the buttons', RED, 'tune')
+    pushKitStyle()
+    ui.setNextItemWidth(190)
+    admin.giveXP = ui.slider('##gxp', admin.giveXP, 500, 100000, 'XP gift: %.0f', true)
+    ui.sameLine(0, 8)
+    ui.setNextItemWidth(190)
     admin.restrict = ui.slider('##restr', admin.restrict, 0, 400, 'Restrictor: %.0f', true)
-    ui.setNextItemWidth(280)
+    ui.sameLine(0, 8)
+    ui.setNextItemWidth(190)
     admin.ballast = ui.slider('##ball', admin.ballast, 0, 500, 'Ballast: %.0f kg', true)
+    popKitStyle()
+    ui.dummy(vec2(1, 8))
   end)
+end
+
+function adminPlayerRow(i, c)
+  local o = others[i]
+  local p = ui.getCursor()
+  local h = 84
+  ui.dummy(vec2(580, h))
+  ui.drawRectFilled(p, p + vec2(580, h), rgbm(1, 1, 1, i == 0 and 0.03 or 0.05), 8)
+  ui.drawRect(p, p + vec2(580, h), rgbm(0.016, 0.012, 0.024, 0.72), 8, ui.CornerFlags.All, 1)
+  local rk = (i == 0) and rankIndex or ((o and o.rank) or 1)
+  local R = RANKS[rk] or RANKS[1]
+  if R and R.icon then pcall(function() ui.drawImage(R.icon, vec2(p.x + 12, p.y + 10), vec2(p.x + 36, p.y + 34), rgbm(1, 1, 1, 1)) end) end
+  local name = (i == 0) and myTag() or driverName(i)
+  text(tostring(name) .. (i == 0 and '  (you)' or ''), 12, vec2(p.x + 46, p.y + 10), rgbm(1, 1, 1, 1), F_BOLD)
+  local sid = sessionOf(i)
+  local ping = 0
+  pcall(function() ping = math.floor(c.ping or 0) end)
+  local carId = ''
+  pcall(function() carId = ac.getCarID(i) or '' end)
+  local spd = 0
+  pcall(function() spd = math.floor(c.speedKmh or 0) end)
+  local extra = ''
+  if o then
+    extra = '   ' .. (R and R.name or '') .. (o.chase and '   IN A CHASE' or '')
+  end
+  text('ID ' .. tostring(sid) .. '   ' .. tostring(carId) .. '   ' .. tostring(ping) .. ' MS   ' .. tostring(spd) .. ' KM/H' .. extra:upper(), 7, vec2(p.x + 46, p.y + 28), DIM, F_BOLD)
+  -- row 1: script-side tools (always work)
+  ui.setCursor(vec2(p.x + 46, p.y + 42))
+  if i ~= 0 then
+    if nlButton('Spectate##' .. i, 86, GOLD, 20, 'eye') then pcall(function() ac.focusCar(i) end); admin.spectating = i end
+    ui.sameLine(0, 4)
+  end
+  if nlButton('Police##' .. i, 74, nil, 20, 'police') then
+    if i == 0 then adminSend(4, 0, '', sid) else adminSend(4, 0, '', sid) end
+    adminLog('police -> ' .. tostring(name))
+  end
+  ui.sameLine(0, 4)
+  if nlButton('Give XP##' .. i, 84, nil, 20, 'xp') then
+    if i == 0 then addXP(admin.giveXP, 'admin gift', GOLD, true) else adminSend(5, admin.giveXP, '', sid) end
+    adminLog(fmt(admin.giveXP) .. ' xp -> ' .. tostring(name))
+  end
+  ui.sameLine(0, 4)
+  if nlButton('Message##' .. i, 86, nil, 20, 'message') then
+    if admin.say ~= '' then adminSend(6, 0, admin.say, sid); adminLog('msg -> ' .. tostring(name)) else adminLog('type the message in the Server tab first') end
+  end
+  if i ~= 0 then
+    -- row 2: server commands (need the server link)
+    ui.setCursor(vec2(p.x + 46, p.y + 62))
+    local ok = adminLinked()
+    if nlButton('Pit##' .. i, 50, nil, 18) then cmd('/pit ' .. sid) end
+    ui.sameLine(0, 4)
+    if nlButton('Kick##' .. i, 54, nil, 18) then cmd('/kick_id ' .. sid) end
+    ui.sameLine(0, 4)
+    if nlButton('Ban##' .. i, 50, RED, 18) then cmd('/ban_id ' .. sid) end
+    ui.sameLine(0, 4)
+    if nlButton('Lights on##' .. i, 74, nil, 18) then cmd('/forcelights on ' .. sid) end
+    ui.sameLine(0, 4)
+    if nlButton('Lights off##' .. i, 76, nil, 18) then cmd('/forcelights off ' .. sid) end
+    ui.sameLine(0, 4)
+    if nlButton('Who##' .. i, 46, nil, 18) then cmd('/whois ' .. sid) end
+    ui.sameLine(0, 4)
+    if nlButton('Restrict##' .. i, 66, nil, 18) then cmd('/restrict ' .. sid .. ' ' .. math.floor(admin.restrict)) end
+    ui.sameLine(0, 4)
+    if nlButton('Ballast##' .. i, 62, nil, 18) then cmd('/ballast ' .. sid .. ' ' .. math.floor(admin.ballast)) end
+    if not ok then text('SERVER', 6, vec2(p.x + 536, p.y + 68), RED, F_BOLD) end
+  end
+  ui.setCursor(vec2(p.x, p.y + h + 6))
 end
 
 function adminTabWorld()
   scrollArea('adm_w', 600, 400, function()
-    section('time of day   (changes for everyone, no restart)', RED)
+    adminLinkStrip()
+    pushKitStyle()
+    section('time of day   (changes for everyone, no restart)', RED, 'time')
     for i, tm in ipairs(TIMES) do
-      if nlButton(tm[1], 100) then cmd(string.format('/settime %02d:%02d', math.floor(tm[2]), math.floor((tm[2] % 1) * 60))) end
+      if nlButton(tm[1], 104, nil, 30) then cmd(string.format('/settime %02d:%02d', math.floor(tm[2]), math.floor((tm[2] % 1) * 60))) end
       if i % 5 ~= 0 and i < #TIMES then ui.sameLine(0, 6) else ui.dummy(vec2(1, 4)) end
     end
     ui.setNextItemWidth(400)
     admin.time = ui.slider('##time', admin.time, 0, 23.99, 'Custom: %.2f h')
     ui.sameLine(0, 8)
-    if nlButton('Set time', 100, GOLD) then cmd(string.format('/settime %02d:%02d', math.floor(admin.time), math.floor((admin.time % 1) * 60))) end
-    section('weather   (needs EnableWeatherFx: true in extra_cfg.yml)', RED)
+    if nlButton('Set time', 110, GOLD, 30, 'time') then cmd(string.format('/settime %02d:%02d', math.floor(admin.time), math.floor((admin.time % 1) * 60))) end
+    section('weather   (needs EnableWeatherFx: true in extra_cfg.yml)', RED, 'weather')
     for i, w in ipairs(WEATHERS) do
-      if nlButton(w[1], 108) then cmd('/setcspweather ' .. w[2] .. ' ' .. math.floor(admin.transition)) end
-      if i % 5 ~= 0 and i < #WEATHERS then ui.sameLine(0, 6) else ui.dummy(vec2(1, 4)) end
+      if nlButton(w[1], 110, nil, 30) then cmd('/setcspweather ' .. w[2] .. ' ' .. math.floor(admin.transition)) end
+      if i % 5 ~= 0 and i < #WEATHERS then ui.sameLine(0, 5) else ui.dummy(vec2(1, 4)) end
     end
     ui.setNextItemWidth(400)
     admin.transition = ui.slider('##trans', admin.transition, 0, 600, 'Transition: %.0f s', true)
-    section('rain and grip', RED)
+    section('rain and grip', RED, 'rain')
     ui.setNextItemWidth(180) admin.rain = ui.slider('##rain', admin.rain, 0, 1, 'Rain: %.2f')
     ui.sameLine(0, 6)
     ui.setNextItemWidth(180) admin.wet = ui.slider('##wet', admin.wet, 0, 1, 'Wetness: %.2f')
     ui.sameLine(0, 6)
     ui.setNextItemWidth(180) admin.water = ui.slider('##water', admin.water, 0, 1, 'Water: %.2f')
-    if nlButton('Apply rain', 120, GOLD) then cmd(string.format('/setrain %.2f %.2f %.2f', admin.rain, admin.wet, admin.water)) end
+    if nlButton('Apply rain', 120, GOLD, 30, 'rain') then cmd(string.format('/setrain %.2f %.2f %.2f', admin.rain, admin.wet, admin.water)) end
     ui.sameLine(0, 6)
-    if nlButton('Dry it up', 100) then admin.rain, admin.wet, admin.water = 0, 0, 0; cmd('/setrain 0 0 0') end
+    if nlButton('Dry it up', 110, nil, 30, 'sun') then admin.rain, admin.wet, admin.water = 0, 0, 0; cmd('/setrain 0 0 0') end
     ui.setNextItemWidth(280) admin.grip = ui.slider('##grip', admin.grip, 0.5, 1, 'Grip: %.2f')
     ui.sameLine(0, 6)
-    if nlButton('Set grip', 100) then cmd(string.format('/setgrip %.2f', admin.grip)) end
+    if nlButton('Set grip', 110, nil, 30, 'grip') then cmd(string.format('/setgrip %.2f', admin.grip)) end
+    popKitStyle()
+    ui.dummy(vec2(1, 8))
   end)
 end
 
 function adminTabServer()
   scrollArea('adm_s', 600, 400, function()
-    section('say something as the server', RED)
-    ui.setNextItemWidth(440)
+    adminLinkStrip()
+    pushKitStyle()
+    section('message   (Send = server chat, or use Message on a player to send it just to them)', RED, 'message')
+    local p = ui.getCursor()
+    pill(p, 440, 32, false, 0)
+    ui.setCursor(vec2(p.x + 12, p.y + 5))
+    ui.setNextItemWidth(416)
+    pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
     admin.say = ui.inputText('##say', admin.say)
-    ui.sameLine(0, 6)
-    if nlButton('Send', 90, GOLD) and admin.say ~= '' then cmd('/say ' .. admin.say); admin.say = '' end
-    section('announcement on every screen (big gold banner)', RED)
-    ui.setNextItemWidth(440)
+    pcall(function() ui.popStyleColor() end)
+    ui.setCursor(vec2(p.x + 450, p.y))
+    if nlButton('Send', 100, GOLD, 32, 'message') and admin.say ~= '' then cmd('/say ' .. admin.say); admin.say = '' end
+    section('announcement on every screen (big gold banner, works without the server link)', RED, 'warning')
+    local q = ui.getCursor()
+    pill(q, 440, 32, false, 0)
+    ui.setCursor(vec2(q.x + 12, q.y + 5))
+    ui.setNextItemWidth(416)
+    pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
     admin.announce = ui.inputText('##ann', admin.announce)
-    ui.sameLine(0, 6)
-    if nlButton('Announce', 90, GOLD) and admin.announce ~= '' then adminSend(1, 0, admin.announce); admin.announce = '' end
-    section('no license events', RED)
+    pcall(function() ui.popStyleColor() end)
+    ui.setCursor(vec2(q.x + 450, q.y))
+    if nlButton('Announce', 100, GOLD, 32, 'warning') and admin.announce ~= '' then adminSend(1, 0, admin.announce); adminLog('announce: ' .. admin.announce); admin.announce = '' end
+    section('no license events', RED, 'bolt')
     ui.setNextItemWidth(240)
     admin.boostMin = ui.slider('##bm', admin.boostMin, 5, 180, '%.0f minutes', true)
     ui.sameLine(0, 6)
-    if nlButton('Start 2X XP for everyone', 200, GOLD) then adminSend(2, admin.boostMin, '') end
-    if nlButton('Clear all chases and races', 220) then adminSend(3, 0, '') end
-    section('session', RED)
-    if nlButton('Next session', 130) then cmd('/next_session') end
+    if nlButton('Start 2X XP for everyone', 220, GOLD, 30, 'xp') then adminSend(2, admin.boostMin, ''); adminLog('2x xp for ' .. math.floor(admin.boostMin) .. ' min') end
+    if nlButton('Police on everyone', 170, nil, 30, 'police') then adminSend(4, 0, '', -1); adminLog('police on everyone') end
     ui.sameLine(0, 6)
-    if nlButton('Restart session', 130) then cmd('/restart_session') end
+    if nlButton('Clear all chases and races', 220, nil, 30, 'close') then adminSend(3, 0, ''); adminLog('cleared chases and races') end
+    section('session   (server link)', RED, 'session')
+    if nlButton('Next session', 130, nil, 30) then cmd('/next_session') end
     ui.sameLine(0, 6)
-    if nlButton('Noclip on', 100) then cmd('/noclip true') end
+    if nlButton('Restart session', 140, nil, 30) then cmd('/restart_session') end
     ui.sameLine(0, 6)
-    if nlButton('Noclip off', 100) then cmd('/noclip false') end
-    section('last commands', RED)
+    if nlButton('Noclip on', 100, nil, 30) then cmd('/noclip true') end
+    ui.sameLine(0, 6)
+    if nlButton('Noclip off', 100, nil, 30) then cmd('/noclip false') end
+    section('last actions', RED, 'info')
     for i = #admin.log, 1, -1 do text(admin.log[i], 9, ui.getCursor() + vec2(2, 0), DIM); ui.dummy(vec2(1, 13)) end
+    popKitStyle()
+    ui.dummy(vec2(1, 8))
+  end)
+end
+
+function adminTabSecurity()
+  scrollArea('adm_sec', 600, 400, function()
+    pushKitStyle()
+    section('this panel', RED, 'key')
+    text('UNLOCKED ON THIS PC. ' .. ADMIN_KEY:upper() .. ' OPENS IT WITHOUT ASKING AGAIN. LOCK IT IF SOMEONE ELSE USES THIS PC.', 8, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+    ui.dummy(vec2(1, 16))
+    if nlButton('Lock the admin panel', 200, RED, 32, 'lock') then adminLock(); pcall(function() ui.toast(ui.Icons and ui.Icons.Confirm or 'fx:loading', 'Admin panel locked.') end) end
+    section('change the admin password', RED, 'settings')
+    text('TYPE A NEW PASSWORD, COPY THE HASH, PASTE IT INTO ADMIN_PASSWORD_HASH AT THE TOP OF NL_RANKS_ONLINE.LUA ON GITHUB.', 8, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+    ui.dummy(vec2(1, 16))
+    local p = ui.getCursor()
+    pill(p, 300, 32, false, 0)
+    ui.setCursor(vec2(p.x + 12, p.y + 5))
+    ui.setNextItemWidth(276)
+    pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+    admin.newPw = ui.inputText('##newpw', admin.newPw)
+    pcall(function() ui.popStyleColor() end)
+    if admin.newPw == '' then text('NEW PASSWORD', 9, vec2(p.x + 14, p.y + 11), rgbm(1, 1, 1, 0.3), F_BOLD) end
+    ui.setCursor(vec2(p.x + 310, p.y))
+    if nlButton('Copy hash', 130, GOLD, 32, 'copy') and admin.newPw ~= '' then
+      admin.newHash = pwHash(admin.newPw)
+      pcall(function() ac.setClipboardText(admin.newHash) end)
+      adminLog('new password hash copied')
+    end
+    if admin.newHash ~= '' then
+      text("ADMIN_PASSWORD_HASH = '" .. admin.newHash .. "'", 10, ui.getCursor() + vec2(2, 0), GOLD, F_BOLD)
+      ui.dummy(vec2(1, 16))
+      text('COPIED TO YOUR CLIPBOARD. AFTER THE NEW FILE IS ON GITHUB, EVERYONE HAS TO ENTER THE NEW PASSWORD ONCE.', 7, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+      ui.dummy(vec2(1, 14))
+    end
+    section('server link', RED, 'server')
+    text('CSP ADMIN FLAG: ' .. (admin.simAdmin and 'YES' or 'NO') .. '      /ADMIN SENT FROM HERE: ' .. (admin.chatAdmin and 'YES' or 'NO'), 8, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+    ui.dummy(vec2(1, 14))
+    text('THE SERVER PASSWORD IS NEVER STORED. TYPE IT IN THE STRIP AT THE TOP OF THE OTHER TABS OR /ADMIN IN CHAT.', 7, ui.getCursor() + vec2(2, 0), DIM, F_BOLD)
+    ui.dummy(vec2(1, 14))
+    if nlButton('Ask CSP again', 150, nil, 30, 'reset') then pcall(function() ac.checkAdminPrivileges() end) end
+    popKitStyle()
+    ui.dummy(vec2(1, 8))
   end)
 end
 
 function drawAdminMenu()
-  nlTabs('a', { 'Players', 'Time & weather', 'Server' }, admin, 600)
-  if admin.tab == 1 then adminTabPlayers() elseif admin.tab == 2 then adminTabWorld() else adminTabServer() end
+  nlTabs('a', { 'Players', 'Time & weather', 'Server', 'Security' }, admin, 600)
+  if admin.tab == 1 then adminTabPlayers() elseif admin.tab == 2 then adminTabWorld() elseif admin.tab == 3 then adminTabServer() else adminTabSecurity() end
+end
+
+-- the password box. its own small panel, nothing to do with the server
+function drawAdminLogin()
+  pushKitStyle()
+  local p = ui.getCursor()
+  if admin.lockT > t then
+    text('TOO MANY TRIES. WAIT ' .. math.ceil(admin.lockT - t) .. ' S.', 11, p + vec2(2, 0), RED, F_BOLD)
+    ui.dummy(vec2(1, 30))
+    popKitStyle()
+    return
+  end
+  text('TYPE THE ADMIN PASSWORD. YOU ONLY DO THIS ONCE ON THIS PC.', 9, p + vec2(2, 0), DIM, F_BOLD)
+  ui.dummy(vec2(1, 22))
+  admin.shake = math.max(0, admin.shake - 0.05)
+  local sx = math.sin(admin.shake * 40) * 6 * admin.shake
+  local q = ui.getCursor() + vec2(sx, 0)
+  pill(q, 280, 36, false, 0)
+  if admin.wrong > 0 then ui.drawRect(q, q + vec2(280, 36), withA(RED, 0.9), 12, ui.CornerFlags.All, 1) end
+  ui.setCursor(vec2(q.x + 12, q.y + 7))
+  ui.setNextItemWidth(256)
+  pcall(function() ui.pushStyleColor(ui.StyleColor.FrameBg, rgbm(0, 0, 0, 0)) end)
+  local pwFlags = 0
+  pcall(function() pwFlags = ui.InputTextFlags.Password + ui.InputTextFlags.FocusByDefault end)
+  local v, _, enter = ui.inputText('##nladminpw', admin.pw, pwFlags)
+  admin.pw = v or admin.pw
+  pcall(function() ui.popStyleColor() end)
+  if admin.pw == '' then text('PASSWORD', 10, vec2(q.x + 14, q.y + 12), rgbm(1, 1, 1, 0.3), F_BOLD) end
+  ui.setCursor(vec2(q.x + 292 - sx, q.y))
+  if (nlButton('Unlock', 110, RED, 36, 'key') or enter == true) and admin.pw ~= '' then
+    adminUnlock(admin.pw)
+    admin.pw = ''
+  end
+  if admin.wrong > 0 then
+    text('WRONG PASSWORD (' .. admin.wrong .. ' / 3)', 9, ui.getCursor() + vec2(2, 4), RED, F_BOLD)
+    ui.dummy(vec2(1, 18))
+  end
+  popKitStyle()
 end
 
 function adminUpdate(dt)
@@ -3034,8 +3324,8 @@ function adminUpdate(dt)
     pcall(function() ac.checkAdminPrivileges() end)
   end
   pcall(function() admin.simAdmin = ac.getSim().isAdmin == true end)
-  admin.isAdmin = admin.simAdmin == true or admin.chatAdmin == true
-  if admin.open and not admin.isAdmin then admin.open = false end
+  admin.isAdmin = admin.unlocked
+  if admin.open and not admin.unlocked then admin.open = false end
 end
 
 adminButton = nil
@@ -3049,15 +3339,27 @@ function adminKeyPressed()
   return ok and v == true
 end
 
--- the server answers /admin <password> in chat. that reply is the second way we know you are admin
+-- what the key / the buttons do: unlocked -> toggle the panel, locked -> the password box
+function adminToggle()
+  if admin.unlocked then
+    admin.open = not admin.open
+    admin.login = false
+    if admin.open then anim['paneladmin'] = 0 end
+  else
+    admin.login = not admin.login
+    admin.open = false
+    if admin.login then anim['panellogin'] = 0; admin.focusT = 3; admin.pw = '' end
+  end
+  menu.open = false
+end
+
+-- the server answers /admin <password> in chat; if it does, note it
 pcall(function()
   ac.onChatMessage(function(message, carIdx)
     local m = tostring(message or ''):lower()
-    if m:find('admin', 1, true) then dlog('chat (' .. tostring(carIdx) .. '): ' .. tostring(message)) end
-    if (carIdx == nil or carIdx < 0 or carIdx == 0) and m:find('admin', 1, true) and (m:find('now', 1, true) or m:find('granted', 1, true) or m:find('logged', 1, true) or m:find('you are', 1, true) or m:find('privileges', 1, true)) then
+    if (carIdx == nil or carIdx < 0) and m:find('admin', 1, true) and (m:find('now', 1, true) or m:find('granted', 1, true) or m:find('logged', 1, true) or m:find('you are', 1, true) or m:find('privileges', 1, true)) then
       admin.chatAdmin = true
-      admin.isAdmin = true
-      pcall(function() ui.toast(ui.Icons and ui.Icons.Confirm or 'fx:loading', 'Admin panel unlocked. Press ' .. ADMIN_KEY:upper() .. '.') end)
+      dlog('server confirmed admin in chat')
     end
     return false
   end)
@@ -3076,12 +3378,15 @@ function script.drawUI(dt)
   end
   adminUpdate(dt)
   if adminKeyPressed() then
-    dlog('admin key, isAdmin=' .. tostring(admin.isAdmin))
-    if admin.isAdmin then admin.open = not admin.open; if admin.open then anim['paneladmin'] = 0 end
-    else pcall(function() ui.toast(ui.Icons and ui.Icons.Warning or 'fx:loading', 'Admin panel: type /admin <password> in chat first.') end) end
+    dlog('admin key, unlocked=' .. tostring(admin.unlocked))
+    adminToggle()
   end
-  if admin.open then
-    local oka, erra = pcall(drawPanel, 'admin', 'No License Admin', 'server control', 664, 640, RED, drawAdminMenu, function() admin.open = false end, 'admin', ADMIN_KEY)
+  if admin.login and not admin.unlocked then
+    local okl, errl = pcall(drawPanel, 'login', 'Admin access', 'no license admin panel', 460, 230, RED, drawAdminLogin, function() admin.login = false end, 'key', ADMIN_KEY)
+    if not okl and drawErr ~= tostring(errl) then drawErr = tostring(errl); dlog('login error: ' .. drawErr) end
+  end
+  if admin.open and admin.unlocked then
+    local oka, erra = pcall(drawPanel, 'admin', 'No License Admin', 'players  -  time and weather  -  server', 664, 640, RED, drawAdminMenu, function() admin.open = false end, 'admin', ADMIN_KEY)
     if not oka and drawErr ~= tostring(erra) then drawErr = tostring(erra); dlog('admin error: ' .. drawErr) end
   end
   -- hint on the left after joining

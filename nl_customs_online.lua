@@ -2,7 +2,7 @@
 -- Respray, wheels, calipers, interior, UK plate text, underglow, looks, easy tuning, showroom camera.
 -- Everyone on the server sees everyone's build. Loaded automatically from csp_extra_options.ini.
 
-local VERSION = '2.6'
+local VERSION = '2.7'
 
 -- Key that opens the customs menu (name from ui.KeyIndex: End, Home, Insert, F9, F10 ...). Rebindable in the Save tab.
 local MENU_KEY = 'Insert'
@@ -1109,6 +1109,7 @@ function searchBox(id, value, w)
 end
 
 -- panel frame: 20px radius glass, 2px grey border, 64px header with its own bottom border
+panelErr = {}
 function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
   local sim = ac.getSim()
   local f = ease('panel' .. id, 1, 10)
@@ -1116,7 +1117,12 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
   local pw, ph = w * sc, h * sc
   local px, py = (sim.windowWidth - pw) / 2, (sim.windowHeight - ph) / 2
   ui.transparentWindow('nl_' .. id, vec2(px - 24, py - 24), vec2(pw + 48, ph + 48), true, true, function()
-    local o = vec2(24, 24)
+    -- the list inside may be taller than the window, so ImGui happily scrolls the whole window on the mouse wheel.
+    -- undo that: draw everything offset by the scroll (so nothing moves) and put the scroll back to zero
+    local sy = 0
+    pcall(function() sy = ui.getScrollY() or 0 end)
+    if sy ~= 0 then pcall(function() ui.setScrollY(0, false, false) end) end
+    local o = vec2(24, 24 + sy)
     ui.drawRectFilled(o + vec2(2, 8), o + vec2(pw + 2, ph + 8), rgbm(0, 0, 0, 0.35 * f), 20)
     ui.drawRectFilled(o, o + vec2(pw, ph), rgbm(0.016, 0.012, 0.024, 0.86 * f), 20)
     -- header
@@ -1147,7 +1153,16 @@ function drawPanel(id, title, subtitle, w, h, accent, fn, onClose, ic, keyName)
     -- every new line starts at the content edge, not at the window edge
     ui.indent(o.x + 22)
     ui.setCursor(o + vec2(22, 80))
-    fn()
+    -- if the content fails the panel still shows, with the reason on it, instead of silently vanishing
+    local okf, errf = pcall(fn)
+    if not okf then
+      local e = tostring(errf)
+      if panelErr[id] ~= e then panelErr[id] = e; dlog('panel ' .. id .. ' error: ' .. e) end
+      text('THIS PANEL HIT AN ERROR', 12, o + vec2(22, 90), RED, F_BOLD)
+      text(e:sub(1, 90), 9, o + vec2(22, 112), rgbm(1, 1, 1, 0.8))
+      if #e > 90 then text(e:sub(91, 180), 9, o + vec2(22, 126), rgbm(1, 1, 1, 0.8)) end
+      text('IT IS IN THE CSP LOG TOO (DOCUMENTS / ASSETTO CORSA / LOGS / CUSTOM_SHADERS_PATCH.LOG)', 7, o + vec2(22, 146), DIM, F_BOLD)
+    end
     ui.unindent(o.x + 22)
   end)
 end
