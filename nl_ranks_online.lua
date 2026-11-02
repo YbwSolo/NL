@@ -5,7 +5,7 @@
 -- you earn something, stays while you are in a run, fades out when you crash or stop.
 -- Never covers the road.
 
-local VERSION = '5.2'
+local VERSION = '5.3'
 
 ------------------------------------------------------------------ CONFIG (edit these)
 
@@ -32,6 +32,8 @@ local COP_MAX_UNITS = 2            -- one unit to start, a second one at 3 stars
 local COP_SECOND_UNIT_STARS = 3
 local HEAT_CRASHES = 4             -- this many contacts...
 local HEAT_WINDOW = 45             -- ...within this many seconds = chase
+local FLIP_TO_PITS = true          -- on your roof and not moving = sent back to the pits. during a chase that is a wreck, not a bust (no xp lost)
+local FLIP_SECONDS = 4             -- how long you can sit flipped before it happens
 local ENABLE_RACE_ZONES = false    -- red circles that start a race lobby
 local ENABLE_FLASH_RACE = true     -- stop next to someone, both flash headlights twice = 60 s race
 local ENABLE_DAILY = true          -- 3 daily challenges
@@ -1439,6 +1441,37 @@ local function chaseUpdate(dt, me)
   end
 end
 
+-- flipped over: nobody wants to sit on their roof in the road, and it is not the police's win either
+local flip = { timer = 0, cool = 0, shown = -1 }
+local function flipUpdate(dt, me)
+  if not FLIP_TO_PITS then return end
+  if flip.cool > 0 then flip.cool = flip.cool - dt return end
+  local over = false
+  pcall(function() over = me.up ~= nil and me.up.y < 0.25 end)
+  if not (over and me.speedKmh < 8) then flip.timer = 0 flip.shown = -1 return end
+  flip.timer = flip.timer + dt
+  if flip.timer < FLIP_SECONDS then
+    local left = math.ceil(FLIP_SECONDS - flip.timer)
+    if left ~= flip.shown then
+      flip.shown = left
+      showBanner('FLIPPED', 'back to the pits in ' .. left, rgbm(1, 0.6, 0.2, 1), 1.2)
+    end
+    return
+  end
+  flip.timer = 0
+  flip.cool = 6
+  if chase.state ~= 'idle' then
+    showBanner('WRECKED', 'you flipped it. no bust, no xp lost. back to the pits', rgbm(1, 0.6, 0.2, 1), 4)
+    chaseReset()
+  else
+    showBanner('FLIPPED', 'back to the pits', rgbm(1, 0.6, 0.2, 1), 3)
+  end
+  endRun(true)
+  local ok = false
+  pcall(function() ok = ac.tryToTeleportToPits() == true end)
+  if not ok then event('could not teleport you. use the pause menu to go back to the pits', rgbm(1, 0.5, 0.4, 1)) end
+end
+
 local function chaseCrash(me)
   if chase.state ~= 'active' then return end
   chase.stars = math.min(5, (chase.stars or 1) + 1)
@@ -1698,6 +1731,7 @@ local function update(dt)
     end
   end
 
+  flipUpdate(dt, me)
   chaseUpdate(dt, me)
   raceUpdate(dt, me)
   duelUpdate(dt, me)
