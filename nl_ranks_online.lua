@@ -3436,7 +3436,7 @@ function drawRunHUD()
   text(ttxt, 20 * s, vec2(x + w - 16 * s - textW(ttxt, 20 * s, F_BOLD).x - 36 * s, y + 24 * s), urgent and withA(RED, 0.6 + 0.4 * math.sin(t * 8)) or rgbm(1, 1, 1, 1), F_BOLD)
   -- arrow: which way is the drop, relative to where the car points
   local rel = runs.target - me.position
-  local ang = math.atan2(rel:dot(me.side), rel:dot(me.look))
+  local ang = (math.atan2 or function(y, x) return math.atan(y, x) end)(rel:dot(me.side), rel:dot(me.look))
   local cx, cy, r = x + w - 24 * s, y + h / 2, 11 * s
   local function pt(a, rr) return vec2(cx + math.sin(a) * rr, cy - math.cos(a) * rr) end
   ui.drawCircleFilled(vec2(cx, cy), 16 * s, rgbm(1, 1, 1, 0.06), 24)
