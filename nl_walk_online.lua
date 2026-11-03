@@ -2,8 +2,8 @@
 -- shift to run, E next to your car to get back in. Everyone else sees you as the No License character.
 -- The character and its animations download once from the server's GitHub (nl_ped.zip).
 
-local VERSION = '1.5'
-local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped3.zip'
+local VERSION = '1.7'
+local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped5.zip'
 local KEY_TOGGLE = 'E'          -- out of the car / back in (ui.KeyIndex names)
 local KEY_VIEW = 'V'            -- first person <-> behind the character
 local KEY_FWD, KEY_BACK, KEY_LEFT, KEY_RIGHT = 'W', 'S', 'A', 'D'
@@ -137,7 +137,7 @@ end
 
 ------------------------------------------------------------------ me
 
-local me = { active = false, w = newWalker(0), pitch = 0, cam = nil, third = false, speed = 0, parked = nil, sendT = 0, bob = 0, hint = '', hintT = -10, stopSends = 0, lockT = 0 }
+local me = { active = false, w = newWalker(0), pitch = 0, camYaw = 0, cam = nil, third = false, speed = 0, parked = nil, sendT = 0, bob = 0, hint = '', hintT = -10, stopSends = 0, lockT = 0 }
 
 local walkEvent = nil
 local others = {}
@@ -189,6 +189,7 @@ local function getOut(car)
   w.pos = car.position + car.side * (SPAWN_SIDE * dir)
   w.pos.y = groundAt(w.pos, car.position.y)
   w.yaw = atan2(car.look.x, car.look.z)
+  me.camYaw = w.yaw
   me.pitch = 0
   me.speed = 0
   w.state = 'idle'
@@ -245,10 +246,12 @@ local function updateMe(dt, car)
     pcall(function() ac.hideMouseCursor(true) end)
   end
   if md then
-    w.yaw = w.yaw - md.x * MOUSE_SENS
+    me.camYaw = me.camYaw - md.x * MOUSE_SENS
     me.pitch = math.max(-1.35, math.min(1.35, me.pitch - md.y * MOUSE_SENS))
   end
-  local fwd = vec3(math.sin(w.yaw), 0, math.cos(w.yaw))
+  -- the camera has its own heading. in first person the body follows it; in third person the body
+  -- turns to face wherever it is walking and the camera orbits around it
+  local fwd = vec3(math.sin(me.camYaw), 0, math.cos(me.camYaw))
   local right = cross(fwd, vec3(0, 1, 0))
 
   -- move
@@ -277,16 +280,30 @@ local function updateMe(dt, car)
     local gy = groundAt(w.pos, w.pos.y)
     w.pos.y = w.pos.y + (gy - w.pos.y) * math.min(1, dt * 12)
   end
-  -- animation state: face the way you look, backpedal when walking backwards
+  -- animation state, and which way the body faces
   if not moving or me.speed < 0.15 then w.state = 'idle'
   elseif b and not f then w.state = 'back'
   elseif running then w.state = 'run'
   else w.state = 'walk' end
+  local faceYaw = me.camYaw
+  if me.third and moving then
+    local dir = mv:normalize()
+    if b and not f then dir = -dir end          -- backpedalling: face away from the travel
+    faceYaw = atan2(dir.x, dir.z)
+  end
+  if me.third then
+    local d = faceYaw - w.yaw
+    while d > math.pi do d = d - 2 * math.pi end
+    while d < -math.pi do d = d + 2 * math.pi end
+    w.yaw = w.yaw + d * math.min(1, dt * 9)
+  else
+    w.yaw = me.camYaw
+  end
 
   -- camera
   me.bob = me.bob + dt * (me.speed > 0.2 and (running and 11 or 7.5) or 0)
   local bobA = me.speed > 0.2 and (running and 0.045 or 0.025) or 0
-  local look = vec3(math.sin(w.yaw) * math.cos(me.pitch), math.sin(me.pitch), math.cos(w.yaw) * math.cos(me.pitch))
+  local look = vec3(math.sin(me.camYaw) * math.cos(me.pitch), math.sin(me.pitch), math.cos(me.camYaw) * math.cos(me.pitch))
   local eye
   if me.third then
     local head = w.pos + vec3(0, 1.45, 0)
@@ -401,7 +418,7 @@ function script.drawUI(dt)
       -- direction to the car when it is out of sight
       if not near then
         local rel = car.position - me.w.pos
-        local ang = atan2(rel.x, rel.z) - me.w.yaw
+        local ang = atan2(rel.x, rel.z) - me.camYaw
         local cx, cy, r = x + w - 20, y + h / 2, 8
         local function pt(a, rr) return vec2(cx + math.sin(a) * rr, cy - math.cos(a) * rr) end
         pcall(function() ui.drawTriangleFilled(pt(ang, r), pt(ang + 2.5, r * 0.8), pt(ang - 2.5, r * 0.8), rgbm(1, 1, 1, 0.9)) end)
