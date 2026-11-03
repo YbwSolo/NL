@@ -2,8 +2,8 @@
 -- shift to run, E next to your car to get back in. Everyone else sees you as the No License character.
 -- The character and its animations download once from the server's GitHub (nl_ped.zip).
 
-local VERSION = '1.4'
-local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped2.zip'
+local VERSION = '1.5'
+local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped3.zip'
 local KEY_TOGGLE = 'E'          -- out of the car / back in (ui.KeyIndex names)
 local KEY_VIEW = 'V'            -- first person <-> behind the character
 local KEY_FWD, KEY_BACK, KEY_LEFT, KEY_RIGHT = 'W', 'S', 'A', 'D'
