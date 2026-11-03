@@ -2,7 +2,7 @@
 -- shift to run, E next to your car to get back in. Everyone else sees you as the No License character.
 -- The character and its animations download once from the server's GitHub (nl_ped.zip).
 
-local VERSION = '2.0'
+local VERSION = '2.1'
 local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped6.zip'
 local EMOTE_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_emotes.zip'
 local KEY_TOGGLE = 'E'          -- out of the car / back in (ui.KeyIndex names)
@@ -421,10 +421,13 @@ local function updateMe(dt, car)
   elseif running then w.state = 'run'
   else w.state = 'walk' end
   local faceYaw = me.camYaw
-  if me.third and moving then
-    local dir = mv:normalize()
-    if b and not f then dir = -dir end          -- backpedalling: face away from the travel
-    faceYaw = atan2(dir.x, dir.z)
+  if me.third then
+    faceYaw = w.yaw                              -- standing still: he holds his facing, the camera orbits round him
+    if moving then
+      local dir = mv:normalize()
+      if b and not f then dir = -dir end        -- backpedalling: face away from the travel
+      faceYaw = atan2(dir.x, dir.z)
+    end
   end
   if w.state == 'emote' then
     -- the pose keeps its facing, the camera is free to orbit for the photo
@@ -524,7 +527,9 @@ end
 
 -- the emote menu: a panel in the middle, one tile per emote, grouped
 local hoverAnim = {}
-local function drawEmoteMenu(sw, sh, dt)
+local uiLastT = nil
+local function drawEmoteMenu(sw, sh)
+  local dt = math.min(0.1, uiLastT and (t - uiLastT) or 0.016)
   me.menuAnim = me.menuAnim + ((me.menu and 1 or 0) - me.menuAnim) * math.min(1, dt * 12)
   if me.menuAnim < 0.01 then return end
   local f = me.menuAnim
@@ -599,11 +604,17 @@ local function drawEmoteMenu(sw, sh, dt)
   end)
 end
 
-function script.drawUI(dt)
-  pcall(function()
-    local sw, sh = sim.windowWidth, sim.windowHeight
+local uiErr = nil
+function script.drawUI()
+  if not sim then return end
+  local sw, sh = sim.windowWidth, sim.windowHeight
+  if me.active then
+    local okm, errm = pcall(drawEmoteMenu, sw, sh)
+    if not okm and uiErr ~= tostring(errm) then uiErr = tostring(errm); dlog('menu error: ' .. uiErr) end
+  end
+  uiLastT = t
+  local ok, err = pcall(function()
     local car = ac.getCar(0)
-    if me.active then drawEmoteMenu(sw, sh, dt) end
     -- names over the other walkers
     for idx, w in pairs(others) do
       if w.visible then
@@ -664,4 +675,5 @@ function script.drawUI(dt)
       text(s, 9, vec2(sw - tw - 24, sh - 28), rgbm(1, 1, 1, 0.28))
     end
   end)
+  if not ok and uiErr ~= tostring(err) then uiErr = tostring(err); dlog('ui error: ' .. uiErr) end
 end
