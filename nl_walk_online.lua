@@ -2,7 +2,7 @@
 -- shift to run, E next to your car to get back in. Everyone else sees you as the No License character.
 -- The character and its animations download once from the server's GitHub (nl_ped.zip).
 
-local VERSION = '1.1'
+local VERSION = '1.3'
 local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped.zip'
 local KEY_TOGGLE = 'E'          -- out of the car / back in (ui.KeyIndex names)
 local KEY_VIEW = 'V'            -- first person <-> behind the character
@@ -83,7 +83,7 @@ end
 
 ------------------------------------------------------------------ the character files
 
-local ped = { folder = nil, err = nil, loading = false, tried = 0 }
+local ped = { folder = nil, err = nil, loading = false, tried = 0, modelErr = nil }
 local function pedLoad()
   if ped.folder or ped.loading or ped.tried >= 3 then return end
   ped.loading = true
@@ -109,11 +109,11 @@ end
 local function walkerModel(w)
   if w.model or not ped.folder then return w.model end
   local ok, err = pcall(function()
-    w.node = ac.findNodes('carsRoot:yes'):createBoundingSphereNode('NL_PED_' .. w.idx, 2.5)
-    w.model = w.node:loadKN5(pedFile('ped.kn5'))
-    if not w.model then error('loadKN5 returned nil') end
+    w.node = ac.findNodes('dynamicRoot:yes'):loadKN5(pedFile('ped.kn5'))
+    if not w.node or w.node:size() == 0 then error('loadKN5 returned nothing') end
+    w.model = w.node
   end)
-  if not ok then dlog('model load failed: ' .. tostring(err)); w.model = false end
+  if not ok then ped.modelErr = tostring(err); dlog('model load failed: ' .. tostring(err)); w.model = false end
   return w.model
 end
 
@@ -204,6 +204,7 @@ local function getIn(reason)
   me.active = false
   if me.cam then pcall(function() me.cam:dispose() end); me.cam = nil end
   pcall(function() physics.setCarNoInput(false) end)
+  pcall(function() physics.awakeCar(0) end)
   walkerHide(me.w)
   me.stopSends = 3
   if reason then hint(reason, 3) end
@@ -232,7 +233,6 @@ local function updateMe(dt, car)
     me.parked = vec3(car.position.x, car.position.y, car.position.z)
     hint('your car moved. you went with it', 3)
   end
-  pcall(function() physics.setCarNoInput(true) end)
 
   -- look
   local md = nil
@@ -283,16 +283,16 @@ local function updateMe(dt, car)
   local look = vec3(math.sin(w.yaw) * math.cos(me.pitch), math.sin(me.pitch), math.cos(w.yaw) * math.cos(me.pitch))
   local eye
   if me.third then
-    local head = w.pos + vec3(0, 1.55, 0)
+    local head = w.pos + vec3(0, 1.45, 0)
     local back = -look
-    local dist = 3.0
+    local dist = 2.8
     local hit = nil
     pcall(function() hit = physics.raycastTrack(head, back, dist + 0.3) end)
     if hit and hit > 0 then dist = math.max(0.6, hit - 0.3) end
-    eye = head + back * dist + right * 0.35 + vec3(0, 0.25, 0)
+    eye = head + back * dist + right * 0.4
     local gy = groundAt(eye, eye.y - 1)
     if eye.y < gy + 0.35 then eye.y = gy + 0.35 end
-    look = (head + fwd * 1.5 - eye):normalize()
+    look = (w.pos + vec3(0, 1.3, 0) + fwd * 2.0 - eye):normalize()
     local a = ANIM[w.state] or ANIM.idle
     me.w.animT = (me.w.animT + dt / a.len) % 1
     walkerDraw(w, 0)
@@ -401,7 +401,10 @@ function script.drawUI(dt)
       end
       local st = me.w.state:upper()
       text(st, 8, vec2(x + 10, y + h + 6), rgbm(1, 1, 1, 0.35))
-      if ped.err then text('CHARACTER DOWNLOAD FAILED: ' .. ped.err:sub(1, 60), 8, vec2(x, y - 16), rgbm(1, 0.3, 0.3, 1)) end
+      if ped.err then text('CHARACTER DOWNLOAD FAILED: ' .. ped.err:sub(1, 60), 8, vec2(x, y - 16), rgbm(1, 0.3, 0.3, 1))
+      elseif ped.modelErr then text('CHARACTER MODEL FAILED: ' .. ped.modelErr:sub(1, 60), 8, vec2(x, y - 16), rgbm(1, 0.3, 0.3, 1))
+      elseif not ped.folder then text('CHARACTER DOWNLOADING...', 8, vec2(x, y - 16), rgbm(1, 1, 1, 0.5))
+      elseif me.third and me.w.model == nil then text('CHARACTER NOT CREATED YET', 8, vec2(x, y - 16), rgbm(1, 1, 1, 0.5)) end
     end
     if t < me.hintT then
       local a = math.min(1, me.hintT - t)
