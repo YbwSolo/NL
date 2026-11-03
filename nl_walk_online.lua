@@ -2,8 +2,8 @@
 -- shift to run, E next to your car to get back in. Everyone else sees you as the No License character.
 -- The character and its animations download once from the server's GitHub (nl_ped.zip).
 
-local VERSION = '1.3'
-local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped.zip'
+local VERSION = '1.4'
+local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped2.zip'
 local KEY_TOGGLE = 'E'          -- out of the car / back in (ui.KeyIndex names)
 local KEY_VIEW = 'V'            -- first person <-> behind the character
 local KEY_FWD, KEY_BACK, KEY_LEFT, KEY_RIGHT = 'W', 'S', 'A', 'D'
@@ -195,7 +195,7 @@ local function getOut(car)
   me.parked = vec3(car.position.x, car.position.y, car.position.z)
   pcall(function() physics.setCarNoInput(true) end)
   pedLoad()
-  hint('WASD walk   SHIFT run   mouse look   V view   E back in the car', 6)
+  hint('WASD walk   SHIFT run   mouse look   V view   hold ALT to free the mouse   E back in the car', 6)
   dlog('out of the car')
 end
 
@@ -234,10 +234,16 @@ local function updateMe(dt, car)
     hint('your car moved. you went with it', 3)
   end
 
-  -- look
+  -- look. the mouse is only taken while the game is the active window and nothing is paused,
+  -- and holding ALT frees it (so alt-tab and the pause menu behave)
   local md = nil
-  pcall(function() md = ac.accessMouseDelta(true, true, true) end)
-  pcall(function() ac.hideMouseCursor(true) end)
+  local grabMouse = true
+  pcall(function() grabMouse = sim.isWindowForeground ~= false and sim.isPaused ~= true and sim.isInMainMenu ~= true end)
+  if keyDown('Menu') then grabMouse = false end
+  if grabMouse then
+    pcall(function() md = ac.accessMouseDelta(true, true, true) end)
+    pcall(function() ac.hideMouseCursor(true) end)
+  end
   if md then
     w.yaw = w.yaw - md.x * MOUSE_SENS
     me.pitch = math.max(-1.35, math.min(1.35, me.pitch - md.y * MOUSE_SENS))
@@ -337,6 +343,7 @@ function script.update(dt)
   sim = ac.getSim()
   local car = ac.getCar(0)
   if not car then return end
+  if t > 8 and not ped.folder then pedLoad() end   -- fetch the character in the background right after joining
   local ok, err = pcall(function()
     updateMe(dt, car)
     updateOthers(dt)
