@@ -1522,8 +1522,13 @@ local flip = { timer = 0, cool = 0, shown = -1 }
 local function flipUpdate(dt, me)
   if not FLIP_TO_PITS then return end
   if flip.cool > 0 then flip.cool = flip.cool - dt return end
+  -- on the roof, stopped, on the ground (not falling, not just spawned)
   local over = false
-  pcall(function() over = me.up ~= nil and me.up.y < 0.25 end)
+  pcall(function()
+    local u = me.up
+    over = u ~= nil and (u.x * u.x + u.y * u.y + u.z * u.z) > 0.5 and u.y < 0.25 and math.abs(me.velocity.y) < 1.5
+  end)
+  if t < 20 or t - tpGrace < 20 then over = false end
   if not (over and me.speedKmh < 8) then flip.timer = 0 flip.shown = -1 return end
   flip.timer = flip.timer + dt
   if flip.timer < FLIP_SECONDS then
@@ -1535,7 +1540,7 @@ local function flipUpdate(dt, me)
     return
   end
   flip.timer = 0
-  flip.cool = 6
+  flip.cool = 25
   if chase.state ~= 'idle' then
     showBanner('WRECKED', 'you flipped it. no bust, no xp lost. back to the pits', rgbm(1, 0.6, 0.2, 1), 4)
     chaseReset()
@@ -1545,6 +1550,7 @@ local function flipUpdate(dt, me)
   endRun(true)
   local ok = false
   pcall(function() ok = ac.tryToTeleportToPits() == true end)
+  tpGrace = t
   if not ok then event('could not teleport you. use the pause menu to go back to the pits', rgbm(1, 0.5, 0.4, 1)) end
 end
 

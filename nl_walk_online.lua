@@ -2,7 +2,7 @@
 -- shift to run, E next to your car to get back in. Everyone else sees you as the No License character.
 -- The character and its animations download once from the server's GitHub (nl_ped.zip).
 
-local VERSION = '1.0'
+local VERSION = '1.1'
 local PED_URL = 'https://raw.githubusercontent.com/YbwSolo/NL/main/nl_ped.zip'
 local KEY_TOGGLE = 'E'          -- out of the car / back in (ui.KeyIndex names)
 local KEY_VIEW = 'V'            -- first person <-> behind the character
@@ -66,12 +66,18 @@ local function keyDown(name)
   pcall(function() v = ac.isKeyDown(k) == true end)
   return v
 end
+local pressedAt = {}
 local function keyPressed(name)
   local v = false
   local k = keyIndex(name)
   if not k then return false end
-  pcall(function() v = ac.isKeyPressed(k) == true end)
-  if not v then pcall(function() v = ui.keyboardButtonPressed(k) == true end) end
+  if ac.isKeyPressed then
+    pcall(function() v = ac.isKeyPressed(k) == true end)
+  else
+    pcall(function() v = ui.keyboardButtonPressed(k) == true end)
+  end
+  if v and t - (pressedAt[k] or -10) < 0.35 then return false end
+  if v then pressedAt[k] = t end
   return v
 end
 
@@ -233,11 +239,11 @@ local function updateMe(dt, car)
   pcall(function() md = ac.accessMouseDelta(true, true, true) end)
   pcall(function() ac.hideMouseCursor(true) end)
   if md then
-    w.yaw = w.yaw + md.x * MOUSE_SENS
+    w.yaw = w.yaw - md.x * MOUSE_SENS
     me.pitch = math.max(-1.35, math.min(1.35, me.pitch - md.y * MOUSE_SENS))
   end
   local fwd = vec3(math.sin(w.yaw), 0, math.cos(w.yaw))
-  local right = vec3(fwd.z, 0, -fwd.x)
+  local right = cross(fwd, vec3(0, 1, 0))
 
   -- move
   local mv = vec3(0, 0, 0)
@@ -277,9 +283,16 @@ local function updateMe(dt, car)
   local look = vec3(math.sin(w.yaw) * math.cos(me.pitch), math.sin(me.pitch), math.cos(w.yaw) * math.cos(me.pitch))
   local eye
   if me.third then
-    eye = w.pos + vec3(0, 1.75, 0) - look * 3.2 + right * 0.45
-    local gy = groundAt(eye, eye.y)
-    if eye.y < gy + 0.4 then eye.y = gy + 0.4 end
+    local head = w.pos + vec3(0, 1.55, 0)
+    local back = -look
+    local dist = 3.0
+    local hit = nil
+    pcall(function() hit = physics.raycastTrack(head, back, dist + 0.3) end)
+    if hit and hit > 0 then dist = math.max(0.6, hit - 0.3) end
+    eye = head + back * dist + right * 0.35 + vec3(0, 0.25, 0)
+    local gy = groundAt(eye, eye.y - 1)
+    if eye.y < gy + 0.35 then eye.y = gy + 0.35 end
+    look = (head + fwd * 1.5 - eye):normalize()
     local a = ANIM[w.state] or ANIM.idle
     me.w.animT = (me.w.animT + dt / a.len) % 1
     walkerDraw(w, 0)
